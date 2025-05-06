@@ -1,0 +1,38 @@
+<h2>Benutzer On-/Offboarding Formular</h2>
+<form method="POST">
+  <label>Vorgang:</label><br>
+  <select name="process_type" required>
+    <option value="onboarding">Onboarding</option>
+    <option value="offboarding">Offboarding</option>
+  </select><br><br>
+
+  <label>Vorname:</label><br>
+  <input type="text" name="firstname" required><br>
+
+  <label>Nachname:</label><br>
+  <input type="text" name="lastname" required><br>
+
+  <label>Abteilung:</label><br>
+  <select name="department" required>
+    {% for dept in departments %}
+      <option value="{{ dept }}">{{ dept }}</option>
+    {% endfor %}
+  </select><br>
+
+  <label>Vorgesetzter (optional):</label><br>
+  <input type="text" name="supervisor"><br>
+
+  <label>Startdatum:</label><br>
+  <input type="date" name="startdate"><br>
+
+  <label>Enddatum (optional):</label><br>
+  <input type="date" name="enddate"><br>
+
+  <label>Hardware:</label><br>
+  <input type="text" name="hardware"><br>
+
+  <label>Sonderanfragen:</label><br>
+  <textarea name="comments"></textarea><br><br>
+
+  <input type="submit" value="Absenden">
+</form>
