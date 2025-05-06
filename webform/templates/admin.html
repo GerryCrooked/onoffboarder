@@ -1,0 +1,21 @@
+<h2>Admin-Dashboard</h2>
+<table border="1">
+  <tr>
+    <th>ID</th>
+    <th>Vorname</th>
+    <th>Nachname</th>
+    <th>Abteilung</th>
+    <th>Typ</th>
+    <th>Status</th>
+  </tr>
+  {% for req in requests %}
+  <tr>
+    <td>{{ req[0] }}</td>
+    <td>{{ req[1] }}</td>
+    <td>{{ req[2] }}</td>
+    <td>{{ req[3] }}</td>
+    <td>{{ req[8] }}</td>
+    <td>{{ req[9] }}</td>
+  </tr>
+  {% endfor %}
+</table>
