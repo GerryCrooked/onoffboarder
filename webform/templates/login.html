@@ -1,0 +1,14 @@
+<h2>Login für On-/Offboarding</h2>
+<form method="POST">
+  <label>Benutzername (AD):</label><br>
+  <input type="text" name="username" required><br><br>
+
+  <label>Passwort:</label><br>
+  <input type="password" name="password" required><br><br>
+
+  <input type="submit" value="Login">
+</form>
+
+{% if error %}
+  <p style="color: red;">{{ error }}</p>
+{% endif %}
