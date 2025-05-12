@@ -1,38 +1,255 @@
-<h2>Benutzer On-/Offboarding Formular</h2>
-<form method="POST">
-  <label>Vorgang:</label><br>
-  <select name="process_type" required>
-    <option value="onboarding">Onboarding</option>
-    <option value="offboarding">Offboarding</option>
-  </select><br><br>
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>On-/Offboarding</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/themes/default/style.min.css" rel="stylesheet">
+</head>
+<body class="p-4">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="/">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav me-auto">
+                <li class="nav-item">
+                    <a class="nav-link" href="/">Formular</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/admin">Admin</a>
+                </li>
+                <li>
+                    <a class="nav-link" href="/archived">Archiv</a>
+                </li>
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item">
+                    <a class="nav-link" href="#">👤 {{ session.user }}</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/logout">Logout</a>
+                </li>
+                {% else %}
+                <li class="nav-item">
+                    <a class="nav-link" href="/login">Login</a>
+                </li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
 
-  <label>Vorname:</label><br>
-  <input type="text" name="firstname" required><br>
+    <div class="container">
+        <h1>On-/Offboarding Formular</h1>
+        <form method="POST" onsubmit="return prepareHardwareSubmission();">
+            <div class="mb-3">
+                <label for="process_type" class="form-label">Prozess</label>
+                <select id="process_type" name="process_type" class="form-select">
+                    <option value="onboarding">Onboarding</option>
+                    <option value="offboarding">Offboarding</option>
+                </select>
+            </div>
 
-  <label>Nachname:</label><br>
-  <input type="text" name="lastname" required><br>
+            <div class="mb-3">
+                <label for="lastname" class="form-label">Nachname</label>
+                <input type="text" id="lastname" name="lastname" class="form-control" required>
+            </div>
+            <div class="mb-3">
+                <label for="firstname" class="form-label">Vorname</label>
+                <input type="text" id="firstname" name="firstname" class="form-control" required>
+            </div>
 
-  <label>Abteilung:</label><br>
-  <select name="department" required>
-    {% for dept in departments %}
-      <option value="{{ dept }}">{{ dept }}</option>
-    {% endfor %}
-  </select><br>
+            <div class="mb-3">
+                <label class="form-label">Abteilung (aus OU wählen)</label>
+                <input type="text" id="department" name="department" class="form-control" readonly required>
+                <input type="hidden" id="department_dn" name="department_dn">
+                <div id="ou-tree" class="border p-2" style="max-height: 400px; overflow-y: scroll;"></div>
+            </div>
 
-  <label>Vorgesetzter (optional):</label><br>
-  <input type="text" name="supervisor"><br>
+            <div class="mb-3">
+                <label for="referenceuser" class="form-label">Referenzbenutzer (optional)</label>
+                <select id="referenceuser" name="referenceuser" class="form-select">
+                    <option value="">Bitte Abteilung wählen</option>
+                </select>
+            </div>
 
-  <label>Startdatum:</label><br>
-  <input type="date" name="startdate"><br>
+            <div class="mb-3">
+                <label for="supervisor" class="form-label">Vorgesetzter</label>
+                <select id="supervisor" name="supervisor" class="form-select" required>
+                    <option value="">Bitte Abteilung wählen</option>
+                </select>
+            </div>
 
-  <label>Enddatum (optional):</label><br>
-  <input type="date" name="enddate"><br>
+            <div class="mb-3">
+                <label for="startdate" class="form-label">Startdatum</label>
+                <input type="date" id="startdate" name="startdate" class="form-control" required>
+            </div>
 
-  <label>Hardware:</label><br>
-  <input type="text" name="hardware"><br>
+            <div class="mb-3">
+                <label for="enddate" class="form-label">Enddatum (optional)</label>
+                <input type="date" id="enddate" name="enddate" class="form-control">
+            </div>
 
-  <label>Sonderanfragen:</label><br>
-  <textarea name="comments"></textarea><br><br>
+            <div class="mb-3">
+                <label class="form-label">Hardware:</label><br>
+                
+                <div class="mb-3">
+                    <label>Computer:</label><br>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_computer" value="Computer bereits vorhanden" id="hwComputer0">
+                        <label class="form-check-label" for="hwComputer0">Gerät bereits vorhanden</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_computer" value="Computer" id="hwComputer1">
+                        <label class="form-check-label" for="hwComputer1">Computer (Festarbeitsplatz Rechner)</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_computer" value="Laptop" id="hwComputer2">
+                        <label class="form-check-label" for="hwComputer2">Laptop</label>
+                    </div>
+                    
+                    <div class="form-check mt-2" id="dockingstationDiv" style="display: none;">
+                        <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Dockingstation" id="Dockingstation">
+                        <label class="form-check-label" for="Dockingstation">Dockingstation benötigt</label>
+                    </div>
+                </div>
 
-  <input type="submit" value="Absenden">
-</form>
+                <div class="mb-3">
+                    <label>Monitor:</label><br>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_monitor" value="Monitor(e) bereits vorhanden" id="monitor0">
+                        <label class="form-check-label" for="monitor0">Monitor(e) bereits vorhanden</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_monitor" value="1 Monitor" id="monitor1">
+                        <label class="form-check-label" for="monitor1">1 Monitor</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="hardware_monitor" value="2 Monitore" id="monitor2">
+                        <label class="form-check-label" for="monitor2">2 Monitore</label>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label>Zubehör:</label><br>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Maus und Tastatur" id="accessories0">
+                        <label class="form-check-label" for="accessories0">Maus und Tastatur</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Headset" id="accessories1">
+                        <label class="form-check-label" for="accessories1">Headset</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Webcam" id="accessories2">
+                        <label class="form-check-label" for="accessories2">Webcam</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label>Zutrittsverwaltung:</label>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="key_required" id="key_required" value="true">
+                    <label class="form-check-label" for="key_required">Schlüssel benötigt</label>
+                </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="comments" class="form-label">Kommentare</label>
+                <textarea id="comments" name="comments" class="form-control"></textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Absenden</button>
+        </form>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.4/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/jstree.min.js"></script>
+    <script>
+        $(document).ready(function () {
+            let allSupervisors = [];
+
+            // JSTree Initialisierung
+            $('#ou-tree').jstree({
+                'core': {
+                    'data': {
+                        'url': '/ou_tree',
+                        'dataType': 'json'
+                    }
+                }
+            });
+
+            // Supervisor Handling
+            fetch('/supervisors_all')
+                .then(response => response.json())
+                .then(supervisors => {
+                    allSupervisors = supervisors;
+                    $('#supervisor').empty().append(new Option("Bitte auswählen", ""));
+                    supervisors.forEach(supervisor => {
+                        $('#supervisor').append(
+                            new Option(`${supervisor.displayName} (${supervisor.username})`, supervisor.email)
+                        );
+                    });
+                });
+
+            // OU Tree Event Handling
+            $('#ou-tree').on("select_node.jstree", function (e, data) {
+                const dn = data.node.data?.dn;
+                const name = data.node.text;
+                if (dn) {
+                    $('#department').val(name);
+                    $('#department_dn').val(dn);
+                    fetchUsersForReference(dn);
+                    setSupervisorFromOu(dn);
+                }
+            });
+
+            // Dockingstation Handling
+            document.querySelectorAll('input[name="hardware_computer"]').forEach(el => {
+                el.addEventListener('change', function() {
+                    const dockingDiv = document.getElementById('dockingstationDiv');
+                    dockingDiv.style.display = this.value === 'Laptop' ? 'block' : 'none';
+                    if (this.value !== 'Laptop') {
+                        document.getElementById('Dockingstation').checked = false;
+                    }
+                });
+            });
+        });
+
+        function fetchUsersForReference(ouDn) {
+            $('#referenceuser').empty().append(new Option("Lade Benutzer...", ""));
+            fetch(`/ou_users?dn=${encodeURIComponent(ouDn)}`)
+                .then(response => response.json())
+                .then(users => {
+                    $('#referenceuser').empty().append(new Option("Bitte auswählen", ""));
+                    users.forEach(user => {
+                        $('#referenceuser').append(
+                            new Option(`${user.displayName} (${user.username})`, user.username)
+                        );
+                    });
+                });
+        }
+
+        function setSupervisorFromOu(ouDn) {
+            const match = allSupervisors.find(s => s.dn && s.dn.includes(ouDn));
+            if (match) $('#supervisor').val(match.email);
+        }
+
+        function prepareHardwareSubmission() {
+            // Handle vorhandene Geräte
+            if (document.getElementById("hwComputer0").checked) {
+                document.querySelectorAll('[name="hardware_computer"]').forEach(el => el.disabled = false);
+            }
+            if (document.getElementById("monitor0").checked) {
+                document.querySelectorAll('[name="hardware_monitor"]').forEach(el => el.disabled = false);
+            }
+            return true;
+        }
+    </script>
+</body>
+</html>
