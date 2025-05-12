@@ -9,6 +9,12 @@
         .hidden {
             display: none;
         }
+        /* Optional: Styling für Ladeanzeige */
+        .loading-placeholder::after {
+            content: " Lade...";
+            font-style: italic;
+            color: #6c757d;
+        }
     </style>
 </head>
 <body class="p-4">
@@ -63,7 +69,8 @@
         {% endwith %}
 
 
-        <form method="POST" id="onoffboarding-form"> <div class="mb-3">
+        <form method="POST" id="onoffboarding-form">
+            <div class="mb-3">
                 <label for="process_type" class="form-label">Prozess</label>
                 <select id="process_type" name="process_type" class="form-select">
                     <option value="onboarding">Onboarding</option>
@@ -104,22 +111,20 @@
                     <input type="text" id="department" name="department" class="form-control" value="{{ form_data.department if form_data else '' }}" readonly required>
                     <input type="hidden" id="department_dn" name="department_dn" value="{{ form_data.department_dn if form_data else '' }}">
                     <div id="ou-tree" class="border p-2 mt-2" style="max-height: 300px; overflow-y: scroll;">
-                        <p>Lade Abteilungsstruktur...</p>
-                    </div>
+                         <p class="loading-placeholder">Abteilungsstruktur</p> </div>
                 </div>
 
                 <div class="mb-3">
                     <label for="referenceuser" class="form-label">Referenzbenutzer (optional)</label>
                     <select id="referenceuser" name="referenceuser" class="form-select">
                         <option value="">Bitte Abteilung wählen</option>
-                        </select>
+                    </select>
                 </div>
 
                 <div class="mb-3">
                     <label for="supervisor" class="form-label">Vorgesetzter</label>
                     <select id="supervisor" name="supervisor" class="form-select" required>
-                         <option value="">Bitte Abteilung wählen oder warten</option>
-                         </select>
+                         <option value="" class="loading-placeholder">Vorgesetzte</option> </select>
                 </div>
                  <hr>
             </div>
@@ -216,12 +221,15 @@
         </form>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script> <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script> <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/jstree.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/jstree.min.js"></script>
     <script>
 
         // Funktion zum Umschalten der Sichtbarkeit der Windows-Benutzer-Felder
         function toggleWindowsUserFields() {
-            console.log("toggleWindowsUserFields aufgerufen");
+            // ... (Code bleibt unverändert) ...
+             console.log("toggleWindowsUserFields aufgerufen");
             const windowsUserFields = $('#windows_user_fields');
             const needsWindowsUserCheckbox = $('#needs_windows_user');
             const departmentInput = $('#department');
@@ -233,17 +241,15 @@
             windowsUserFields.toggleClass('hidden', !isChecked);
             console.log("windowsUserFields visibility:", windowsUserFields.is(':visible'));
 
-            // Setze 'required' für Felder, die nur bei Bedarf ausgefüllt werden müssen
             departmentInput.prop('required', isChecked);
             supervisorSelect.prop('required', isChecked);
 
             if (isChecked && !ouTreeDiv.data('jstree')) {
-                 // Initialisiere jstree nur, wenn es benötigt wird und noch nicht existiert
                  console.log("Initialisiere jsTree");
                  ouTreeDiv.jstree({
                     'core': {
                         'data': {
-                            'url': '/ou_tree', // Holt die Baumdaten vom Backend
+                            'url': '/ou_tree',
                             'dataType': 'json',
                              'error': function(jqXHR, textStatus, errorThrown) {
                                 console.error("Fehler beim Laden des OU-Baums:", textStatus, errorThrown);
@@ -253,25 +259,20 @@
                     }
                  }).on('loaded.jstree', function() {
                       console.log("jsTree geladen.");
-                      ouTreeDiv.find('p').remove(); // Entferne "Lade..." Nachricht
+                      ouTreeDiv.find('p').remove();
                  });
             } else if (!isChecked && ouTreeDiv.data('jstree')) {
-                 // Optional: Zerstöre Baum, wenn Checkbox deaktiviert wird
-                 // console.log("Zerstöre jsTree");
-                 // ouTreeDiv.jstree("destroy").empty();
-                 // ouTreeDiv.html('<p>Abteilungsstruktur wird geladen, wenn benötigt.</p>'); // Platzhalter
-                 // Leere auch abhängige Felder
                  departmentInput.val('');
                  $('#department_dn').val('');
                  $('#referenceuser').empty().append(new Option("Bitte wählen", ""));
-                 // Lade die globale Supervisor-Liste neu oder setze zurück
-                 loadInitialSupervisors(); // Lädt alle Vorgesetzten neu
+                 loadInitialSupervisors();
             }
         };
 
         // Funktion zum Umschalten der Sichtbarkeit der Hardware-Felder
         function toggleHardwareFields() {
-            console.log("toggleHardwareFields aufgerufen");
+            // ... (Code bleibt unverändert) ...
+             console.log("toggleHardwareFields aufgerufen");
             const hardwareFieldsDiv = $('#hardware_fields');
             const needsHardwareCheckbox = $('#needs_hardware');
             const isChecked = needsHardwareCheckbox.prop('checked');
@@ -280,30 +281,41 @@
             hardwareFieldsDiv.toggleClass('hidden', !isChecked);
             console.log("hardwareFieldsDiv visibility:", hardwareFieldsDiv.is(':visible'));
 
-             // Setze required für Radio-Buttons (nur einer pro Gruppe)
              $('input[name="hardware_computer"]').prop('required', isChecked);
              $('input[name="hardware_monitor"]').prop('required', isChecked);
 
              if (!isChecked) {
-                  // Optional: Setze Hardware-Felder zurück, wenn Checkbox deaktiviert wird
                    $('input[name="hardware_computer"]').prop('checked', false);
                    $('input[name="hardware_monitor"]').prop('checked', false);
                    $('input[name="hardware_accessories[]"]').prop('checked', false);
-                   $('#dockingstationDiv').hide(); // Dockingstation auch ausblenden
+                   $('#dockingstationDiv').hide();
              }
         };
 
-        // --- NEUE HILFSFUNKTION zum Befüllen der Vorgesetzten-Liste ---
+        // Hilfsfunktion zum Befüllen der Vorgesetzten-Liste
         function populateSupervisorDropdown(supervisors) {
             const supervisorSelect = $('#supervisor');
-            supervisorSelect.empty().append('<option value="">--- Bitte wählen ---</option>'); // Standardoption leeren/hinzufügen
+            supervisorSelect.empty().append('<option value="">--- Bitte wählen ---</option>');
 
             if (supervisors && supervisors.length > 0) {
                  console.log(`Fülle Vorgesetzten-Dropdown mit ${supervisors.length} Einträgen.`);
                  supervisors.forEach(supervisor => {
-                    // Verwende E-Mail als Wert, wenn vorhanden, sonst DN, sonst Name
+                    // --- HIER ANPASSEN an die ECHTEN Namen aus der /supervisors Antwort ---
+                    // Annahmen aktuell: 'name', 'mail', 'dn'
+                    // Mögliche echte Namen: 'displayName', 'email', 'userPrincipalName', 'distinguishedName', 'cn' etc.
+                    // Prüfe die Antwort im Netzwerk-Tab!
+
+                    // PASSE HIER AN: Den anzuzeigenden Text zusammenbauen
+                    // Beispiel: Verwende 'displayName' statt 'name' und 'mail'
+                    let supervisorText = supervisor.name + (supervisor.mail ? ` (${supervisor.mail})` : '');
+                    // Z.B.: let supervisorText = supervisor.displayName + (supervisor.mail ? ` (${supervisor.mail})` : '');
+
+                    // PASSE HIER AN: Den Wert für das <option> Element bestimmen (z.B. E-Mail oder DN)
+                    // Beispiel: Verwende 'mail' als primären Wert, sonst 'dn', sonst 'displayName'
                     let supervisorValue = supervisor.mail ? supervisor.mail : (supervisor.dn ? supervisor.dn : supervisor.name);
-                    let supervisorText = supervisor.name + (supervisor.mail ? ` (${supervisor.mail})` : ''); // Name (E-Mail)
+                    // Z.B.: let supervisorValue = supervisor.mail ? supervisor.mail : (supervisor.distinguishedName ? supervisor.distinguishedName : supervisor.displayName);
+
+                    console.debug(`Füge Option hinzu: Text='${supervisorText}', Wert='${supervisorValue}'`); // Logge was hinzugefügt wird
                     supervisorSelect.append($('<option>', {
                         value: supervisorValue,
                         text: supervisorText
@@ -311,16 +323,15 @@
                  });
             } else {
                  console.log("Keine Vorgesetzten zum Befüllen des Dropdowns gefunden.");
-                 supervisorSelect.append('<option value="" disabled>Keine Vorgesetzten gefunden</option>'); // Hinweis
+                 supervisorSelect.append('<option value="" disabled>Keine Vorgesetzten gefunden</option>');
             }
         }
 
         // Funktion zum Laden der Referenzbenutzer für eine OU
         function fetchUsersForReference(ouDn) {
              const referenceUserSelect = $('#referenceuser');
-             referenceUserSelect.empty().append(new Option("Lade Benutzer...", "")); // Ladeanzeige
+             referenceUserSelect.empty().append(new Option("Lade Benutzer...", ""));
 
-             // URL für die Benutzer in der OU
              const url = `/ou_users?dn=${encodeURIComponent(ouDn)}`;
              console.log("Lade Referenzbenutzer von:", url);
 
@@ -331,12 +342,23 @@
                  })
                  .then(users => {
                      console.log(`Empfangene Referenzbenutzer (${users.length}):`, users);
-                     referenceUserSelect.empty().append(new Option("--- Bitte wählen ---", "")); // Zurücksetzen
+                     referenceUserSelect.empty().append(new Option("--- Bitte wählen ---", ""));
                      if (users && users.length > 0) {
                         users.forEach(user => {
-                            // Verwende sAMAccountName als Wert
-                            let userValue = user.sAMAccountName ? user.sAMAccountName : user.name;
-                            let userText = user.name + (user.sAMAccountName ? ` (${user.sAMAccountName})` : '');
+                            // --- HIER ANPASSEN an die ECHTEN Namen aus der /ou_users Antwort ---
+                            // Annahmen aktuell: 'name', 'sAMAccountName'
+                            // Mögliche echte Namen: 'displayName', 'samAccountName', 'cn' etc.
+                            // Prüfe die Antwort im Netzwerk-Tab!
+
+                            // PASSE HIER AN: Den Wert bestimmen (z.B. sAMAccountName)
+                            let userValue = user.sAMAccountName ? user.sAMAccountName : user.name; // Aktuell: sAMAccountName oder Name
+                            // Z.B.: let userValue = user.samAccountName ? user.samAccountName : user.displayName;
+
+                            // PASSE HIER AN: Den anzuzeigenden Text zusammenbauen
+                            let userText = user.name + (user.sAMAccountName ? ` (${user.sAMAccountName})` : ''); // Aktuell: Name (sAMAccountName)
+                            // Z.B.: let userText = user.displayName + (user.samAccountName ? ` (${user.samAccountName})` : '');
+
+                            console.debug(`Füge Referenz-Option hinzu: Text='${userText}', Wert='${userValue}'`);
                             referenceUserSelect.append(new Option(userText, userValue));
                         });
                      } else {
@@ -349,12 +371,11 @@
                  });
          }
 
-         // --- ANGEPASSTE FUNKTION zum Laden der Supervisoren für eine OU ---
-         // Diese Funktion ruft jetzt die korrekte Backend-Route auf und nutzt die Hilfsfunktion
+         // Funktion zum Laden der Supervisoren für eine OU
          function fetchAndSetSupervisorsForOu(ouDn) {
-             const url = `/supervisors?dn=${encodeURIComponent(ouDn)}`; // KORREKTE URL mit DN
+             const url = `/supervisors?dn=${encodeURIComponent(ouDn)}`; // Korrekte URL
              console.log("Lade Vorgesetzten-Liste von:", url);
-              $('#supervisor').empty().append('<option value="">Lade Vorgesetzte...</option>'); // Ladeanzeige
+              $('#supervisor').empty().append('<option value="" class="loading-placeholder">Vorgesetzte</option>'); // Ladeanzeige
 
              fetch(url)
                  .then(response => {
@@ -362,20 +383,21 @@
                      return response.json();
                  })
                  .then(supervisorList => {
-                     // Verwende die Hilfsfunktion zum Befüllen
-                     populateSupervisorDropdown(supervisorList);
+                     populateSupervisorDropdown(supervisorList); // Verwende Hilfsfunktion
                  })
                  .catch(error => {
                      console.error("Fehler beim Laden der Vorgesetzten für OU:", error);
-                      $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>'); // Hinweis im Dropdown
+                      $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>');
                  });
          }
 
-         // --- NEUE FUNKTION zum initialen Laden aller Supervisoren ---
+         // Funktion zum initialen Laden aller Supervisoren
          function loadInitialSupervisors() {
-              const url = '/supervisors'; // KORREKTE URL ohne DN für alle Supervisoren
+              const url = '/supervisors'; // Korrekte URL ohne DN
               console.log("Lade initiale Vorgesetzten-Liste von:", url);
-              $('#supervisor').empty().append('<option value="">Lade Vorgesetzte...</option>'); // Ladeanzeige
+              // Setze Platzhalter während des Ladens
+              $('#supervisor').empty().append('<option value="" class="loading-placeholder">Vorgesetzte</option>');
+
 
               fetch(url)
                   .then(response => {
@@ -383,12 +405,11 @@
                      return response.json();
                   })
                   .then(supervisorList => {
-                      // Verwende die Hilfsfunktion zum Befüllen
-                      populateSupervisorDropdown(supervisorList);
+                      populateSupervisorDropdown(supervisorList); // Verwende Hilfsfunktion
                   })
                   .catch(error => {
                       console.error("Fehler beim initialen Laden aller Vorgesetzten:", error);
-                       $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>'); // Hinweis im Dropdown
+                       $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>');
                   });
          }
 
@@ -403,65 +424,112 @@
 
             // Event Handler für OU Tree Auswahl
             ouTreeDiv.on("select_node.jstree", function (e, data) {
-                 // data.node enthält den ausgewählten Knoten
                  const selectedNode = data.node;
-                 // Verwende data.dn für den Distinguished Name (falls im Backend so gesetzt)
-                 const dn = selectedNode.data?.dn; // Sicherer Zugriff
-                 const name = selectedNode.text; // Der angezeigte Name
+                 const dn = selectedNode.data?.dn;
+                 const name = selectedNode.text;
 
                  if (dn) {
                     console.log("OU ausgewählt:", name, "DN:", dn);
                     departmentInput.val(name);
                     departmentDnInput.val(dn);
-                    // Lade Referenzbenutzer und Vorgesetzte für die ausgewählte OU
                     fetchUsersForReference(dn);
-                    fetchAndSetSupervisorsForOu(dn); // Ruft die korrigierte Funktion auf
+                    fetchAndSetSupervisorsForOu(dn);
                  } else {
                      console.warn("Ausgewählter Knoten hat keinen DN:", selectedNode);
-                     // Setze Felder zurück oder lade globale Liste, falls kein DN vorhanden
                      departmentInput.val('');
                      departmentDnInput.val('');
                      $('#referenceuser').empty().append(new Option("Bitte Abteilung wählen", ""));
-                     loadInitialSupervisors(); // Lade globale Liste wenn kein DN
+                     loadInitialSupervisors(); // Lade globale Liste neu
                  }
             });
 
-            // Event Listener für Dockingstation Checkbox (basierend auf Laptop-Auswahl)
+            // Event Listener für Dockingstation Checkbox
              $('input[name="hardware_computer"]').on('change', function() {
+                const isChecked = $('#needs_hardware').prop('checked');
                  const dockingDiv = $('#dockingstationDiv');
-                 if (this.value === 'Laptop' && $('#needs_hardware').prop('checked')) {
-                     dockingDiv.show(); // Zeige nur wenn Laptop UND Hardware benötigt
+                 if (this.value === 'Laptop' && isChecked) {
+                     dockingDiv.show();
                  } else {
                      dockingDiv.hide();
-                     $('#Dockingstation').prop('checked', false); // Optional: Checkbox zurücksetzen
+                     $('#Dockingstation').prop('checked', false);
                  }
              });
-             // Stelle sicher, dass Dockingstation initial korrekt angezeigt wird, falls Laptop vorausgewählt ist
-             if ($('input[name="hardware_computer"][value="Laptop"]').is(':checked') && $('#needs_hardware').prop('checked')) {
-                  $('#dockingstationDiv').show();
-             }
-
+             // Auch auf Änderung der "Hardware benötigt" Checkbox reagieren
+             $('#needs_hardware').on('change', function() {
+                  const needsHardware = $(this).prop('checked');
+                  const isLaptop = $('input[name="hardware_computer"][value="Laptop"]').is(':checked');
+                  const dockingDiv = $('#dockingstationDiv');
+                  if (needsHardware && isLaptop) {
+                       dockingDiv.show();
+                  } else {
+                       dockingDiv.hide();
+                       $('#Dockingstation').prop('checked', false);
+                  }
+             });
 
              // Initialzustand der Felder beim Laden der Seite setzen
              toggleWindowsUserFields();
              toggleHardwareFields();
+              // Initialer Check für Dockingstation Sichtbarkeit
+             if ($('input[name="hardware_computer"][value="Laptop"]').is(':checked') && $('#needs_hardware').prop('checked')) {
+                 $('#dockingstationDiv').show();
+             } else {
+                 $('#dockingstationDiv').hide();
+             }
 
-             // Formular-Validierung beim Absenden (optional, HTML5 required ist oft ausreichend)
+
+             // Formular-Validierung beim Absenden
              $('#onoffboarding-form').on('submit', function(event) {
                   let isValid = true;
-                  // Beispiel: Prüfe ob Vorgesetzter ausgewählt ist, wenn Windows benötigt wird
-                  if ($('#needs_windows_user').prop('checked') && $('#supervisor').val() === '') {
-                       alert('Bitte wählen Sie einen Vorgesetzten aus.');
-                       $('#supervisor').focus(); // Fokus auf das Feld setzen
+                  const needsWindows = $('#needs_windows_user').prop('checked');
+
+                  // Pflichtfelder prüfen
+                  if ($('#lastname').val().trim() === '') {
+                       alert('Bitte geben Sie einen Nachnamen an.');
+                       $('#lastname').focus();
                        isValid = false;
                   }
+                  if (isValid && $('#firstname').val().trim() === '') {
+                        alert('Bitte geben Sie einen Vornamen an.');
+                       $('#firstname').focus();
+                       isValid = false;
+                  }
+                 // Pflichtfelder prüfen, wenn Windows-Konto benötigt wird
+                  if (isValid && needsWindows) {
+                        if ($('#department').val().trim() === '') {
+                            alert('Bitte wählen Sie eine Abteilung aus.');
+                             // Kein Fokus auf readonly Feld, evtl. Hinweis am Baum?
+                             isValid = false;
+                        }
+                        if (isValid && $('#supervisor').val() === '') {
+                            alert('Bitte wählen Sie einen Vorgesetzten aus.');
+                            $('#supervisor').focus();
+                            isValid = false;
+                       }
+                  }
+                 // Pflichtfelder prüfen, wenn Hardware benötigt wird
+                 const needsHardware = $('#needs_hardware').prop('checked');
+                  if (isValid && needsHardware) {
+                       if (!$('input[name="hardware_computer"]:checked').length) {
+                            alert('Bitte wählen Sie eine Computer-Option aus.');
+                            // Fokus schwierig bei Radios, evtl. Hinweis am Feld
+                           isValid = false;
+                       }
+                        if (isValid && !$('input[name="hardware_monitor"]:checked').length) {
+                            alert('Bitte wählen Sie eine Monitor-Option aus.');
+                            isValid = false;
+                       }
+                  }
 
-                  // Weitere clientseitige Prüfungen hier...
 
                   if (!isValid) {
-                       event.preventDefault(); // Verhindere das Absenden
+                       event.preventDefault(); // Verhindere das Absenden bei Fehlern
+                       console.log("Formular ungültig, Absenden verhindert.");
+                  } else {
+                       console.log("Formular gültig, wird abgeschickt.");
+                       // Optional: Deaktiviere Button um Doppelklicks zu verhindern
+                       $(this).find('button[type="submit"]').prop('disabled', true).text('Wird gesendet...');
                   }
-                  // Wenn alles gültig ist, wird das Formular normal abgeschickt
              });
 
         });
