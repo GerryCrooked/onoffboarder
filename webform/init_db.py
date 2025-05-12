@@ -16,16 +16,17 @@ CREATE TABLE IF NOT EXISTS requests (
     supervisor TEXT,
     startdate TEXT,
     enddate TEXT,
-    hardware TEXT,
     comments TEXT,
     referenceuser TEXT,
     process_type TEXT,
     status TEXT,
     role TEXT,
-    account_info TEXT,
-    hardware_status TEXT,
-    key_status TEXT,
-    key_confirmation TEXT
+    hardware_computer TEXT,
+    hardware_monitor TEXT,
+    hardware_accessories TEXT,
+    hardware_mobile TEXT,
+    key_required TEXT,
+    required_windows INTEGER
 )
 ''')
 
