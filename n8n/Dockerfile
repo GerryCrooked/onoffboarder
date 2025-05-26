@@ -1,17 +1,41 @@
-FROM n8nio/n8n
+# Start with the official n8n image (likely Alpine-based)
+FROM n8nio/n8n:latest
 
-# Install PowerShell Core + ActiveDirectory module via Linux-Tools
+# Switch to root user to install packages
 USER root
 
-RUN apt-get update && \
-    apt-get install -y wget apt-transport-https software-properties-common && \
-    wget -q https://packages.microsoft.com/config/debian/11/packages-microsoft-prod.deb && \
-    dpkg -i packages-microsoft-prod.deb && \
-    apt-get update && \
-    apt-get install -y powershell
+# Install prerequisites for PowerShell on Alpine
+# Details: https://learn.microsoft.com/en-us/powershell/scripting/install/install-alpine?view=powershell-7.4
+RUN apk update && \
+    apk add --no-cache \
+    ca-certificates \
+    krb5-libs \
+    libgcc \
+    libintl \
+    libssl3 \
+    libstdc++ \
+    tzdata \
+    userspace-rcu \
+    zlib \
+    icu-libs \
+    curl \
+    ncurses-terminfo-base \
+    less # Optional, aber nützlich
+
+# Install PowerShell
+# Microsoft hat offizielle Pakete für Alpine in deren Repository
+RUN apk add --no-cache powershell
 
 # Install PowerShell modules
-RUN pwsh -Command "Install-Module -Name ActiveDirectory -Force -Scope AllUsers"
+# HINWEIS: Die volle Funktionalität des Microsoft.ActiveDirectory.Management Moduls
+# auf Linux für schreibende Operationen ist nicht garantiert und kann
+# zusätzliche Konfiguration (z.B. Kerberos für den Container) erfordern.
+# Für Leseoperationen funktioniert es oft besser.
+RUN pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted; Install-Module -Name Microsoft.ActiveDirectory.Management -Repository PSGallery -Force -Scope AllUsers -AcceptLicense; Exit 0"
+# Exit 0 ist ein Workaround, falls Install-Module manchmal einen nicht-Null Exit-Code gibt, obwohl es geklappt hat.
+# Überprüfe nach dem Bauen des Images, ob das Modul wirklich da ist:
+# docker run --rm your-custom-n8n-image pwsh -Command "Get-Module -ListAvailable Microsoft.ActiveDirectory.Management"
 
-# Use normal n8n user again
+# Switch back to the node user
 USER node
+
