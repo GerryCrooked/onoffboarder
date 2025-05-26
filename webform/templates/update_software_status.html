@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Software Zugangsstatus - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; }
+        .status-block { margin-bottom: 15px; padding: 15px; border: 1px solid #dee2e6; border-radius: .375rem; }
+        .status-done { background-color: #d1e7dd; border-color: #badbcc; }
+        .status-done p, .status-done h5 { color: #0f5132; }
+        .navbar { margin-bottom: 1rem; } /* Geändert */
+        .emoji-icon { margin-right: 0.5em; }
+    </style>
+</head>
+<body class="pt-4">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavSwStatusPage">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavSwStatusPage">
+            <ul class="navbar-nav me-auto">
+                {% if session.is_admin %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request_item else None) }}">Login</a></li>
+                {% endif %}
+                 {% if request_item and session.is_admin %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('view_request', request_id=request_item.id) }}">Zurück zur Antragsansicht</a></li>
+                 {% elif request_item and session.user %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Zum Dashboard</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% if request_item %}
+    <h1>Software Zugangsstatus für Antrag ID: {{ request_item.id }}</h1>
+    <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
+    <p>AD Benutzername (falls vorhanden): {{ request_item.n8n_ad_username_created or 'N/A' }}</p>
+    <hr>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <h3 class="mt-4">Status-Updates Software-Zugänge</h3>
+
+    {% if request_item.needs_ris_access %}
+    <div class="status-block {% if request_item.ris_access_status_granted_at %}status-done{% endif %}">
+        <h5><span class="emoji-icon">📊</span> RIS Zugang</h5>
+        {% if not request_item.ris_access_status_granted_at %}
+            <form method="POST" action="{{ url_for('update_software_status', request_id=request_item.id) }}" style="display: inline-block;">
+                <input type="hidden" name="action" value="ris_granted">
+                <button type="submit" class="btn btn-primary btn-sm">RIS Zugang als erteilt bestätigen</button> {# btn-sm #}
+            </form>
+        {% else %}
+            <p class="text-success mb-0">✔️ RIS Zugang erteilt am: {# mb-0 #}
+                {{ request_item.ris_access_status_granted_at | format_datetime }}
+                durch: {{ request_item.ris_access_status_granted_by }}.
+            </p>
+        {% endif %}
+    </div>
+    {% elif 'update_software_status' in request.endpoint and not request_item.needs_cipkom_access and not request_item.other_software_notes %}
+        {# Nur anzeigen, wenn keine andere Software angefordert wurde, um Doppelanzeigen zu vermeiden #}
+        <div class="alert alert-light mt-3">Für RIS wurde kein Zugang im Antrag angefordert.</div>
+    {% endif %}
+
+
+    {% if request_item.needs_cipkom_access %}
+    <div class="status-block {% if request_item.cipkom_access_status_granted_at %}status-done{% endif %}">
+        <h5><span class="emoji-icon">🗃️</span> CIPKOM Zugang</h5>
+        {% if request_item.cipkom_reference_user %}
+            <p class="mb-1"><small class="text-muted">Referenzbenutzer (CIPKOM): {{ request_item.cipkom_reference_user }}</small></p>
+        {% endif %}
+        {% if not request_item.cipkom_access_status_granted_at %}
+            <form method="POST" action="{{ url_for('update_software_status', request_id=request_item.id) }}" style="display: inline-block;">
+                <input type="hidden" name="action" value="cipkom_granted">
+                <button type="submit" class="btn btn-primary btn-sm">CIPKOM Zugang als erteilt bestätigen</button> {# btn-sm #}
+            </form>
+        {% else %}
+            <p class="text-success mb-0">✔️ CIPKOM Zugang erteilt am: {# mb-0 #}
+                {{ request_item.cipkom_access_status_granted_at | format_datetime }}
+                durch: {{ request_item.cipkom_access_status_granted_by }}.
+            </p>
+        {% endif %}
+    </div>
+    {% elif 'update_software_status' in request.endpoint and not request_item.needs_ris_access and not request_item.other_software_notes %}
+        <div class="alert alert-light mt-3">Für CIPKOM wurde kein Zugang im Antrag angefordert.</div>
+    {% endif %}
+
+    {% if request_item.other_software_notes %}
+        <div class="card mt-4">
+            <div class="card-header"><span class="emoji-icon">💡</span> Sonstige angeforderte Spezialsoftware</div>
+            <div class="card-body">
+                <pre>{{ request_item.other_software_notes | nl2br }}</pre>
+                <small class="text-muted">Dieser Status wird nicht separat über Buttons auf dieser Seite verfolgt. Die Erledigung sollte im Ticketsystem oder direkt vermerkt werden.</small>
+            </div>
+        </div>
+    {% elif not request_item.needs_ris_access and not request_item.needs_cipkom_access %}
+         <div class="alert alert-info mt-3">Keine spezifischen Software-Zugänge (RIS/CIPKOM) oder sonstige Software für diesen Antrag vermerkt.</div>
+    {% endif %}
+
+    <div class="mt-4 mb-5">
+        {% if session.is_admin %}
+            <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
+        {% elif session.user %}
+            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zum Dashboard</a>
+        {% endif %}
+    </div>
+    {% else %}
+        <div class="alert alert-warning mt-3">Antrag nicht gefunden oder konnte nicht geladen werden.</div>
+        <a href="{{ url_for('admin') }}" class="btn btn-secondary mt-3">Zurück zum Admin-Dashboard</a>
+    {% endif %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

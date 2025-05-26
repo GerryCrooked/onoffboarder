@@ -4,25 +4,32 @@
     <meta charset="UTF-8">
     <title>Adminbereich – Anträge</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; } /* Adjust if navbar height changes */
+        .navbar { margin-bottom: 1rem; } /* Add some space below navbar */
+    </style>
 </head>
-<body class="p-4">
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+<body class="pt-4"> {# Removed p-4 from body, padding-top handles navbar space #}
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
-        <a class="navbar-brand" href="/">On-/Offboarding</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else '#' }}">On-/Offboarding</a> {# Link to form only if admin #}
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavAdmin">
             <span class="navbar-toggler-icon"></span>
         </button>
-        <div class="collapse navbar-collapse" id="navbarNav">
+        <div class="collapse navbar-collapse" id="navbarNavAdmin">
             <ul class="navbar-nav me-auto">
-                <li class="nav-item">
-                    <a class="nav-link" href="/">Formular</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="/admin">Admin</a>
-                </li>
-                <li>
-                    <a class="nav-link" href="/archived">Archiv</a>
-                </li>
+                {% if session.is_admin %} {# ADMIN_MAIN_GROUP #}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('form') }}">Formular</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link active" aria-current="page" href="{{ url_for('admin') }}">Admin</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{{ url_for('archived') }}">Archiv</a>
+                    </li>
+                {% endif %}
+                {# Add other links accessible by MAIN_ACCESS_GROUP if needed #}
             </ul>
             <ul class="navbar-nav">
                 {% if session.user %}
@@ -30,11 +37,11 @@
                     <a class="nav-link" href="#">👤 {{ session.user }}</a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link" href="/logout">Logout</a>
+                    <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
                 </li>
                 {% else %}
                 <li class="nav-item">
-                    <a class="nav-link" href="/login">Login</a>
+                    <a class="nav-link" href="{{ url_for('login') }}">Login</a>
                 </li>
                 {% endif %}
             </ul>
@@ -44,8 +51,20 @@
 
     <div class="container">
         <h1>Adminbereich: Übersicht der Anträge</h1>
-        <table class="table table-bordered table-striped">
-            <thead>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category or 'info' }} alert-dismissible fade show mt-3" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <table class="table table-bordered table-striped table-hover">
+            <thead class="table-dark">
                 <tr>
                     <th>ID</th>
                     <th>Referenzbenutzer</th>
@@ -62,29 +81,43 @@
             <tbody>
                 {% for row in requests %}
                 <tr>
-                    <td>{{ row[0] }}</td>
-                    <td>{{ row[10] }}</td>
-                    <td>{{ row[2] }}, {{ row[1] }}</td>
-                    <td>{% set parts = row[4].split(',') %}
-                        {% set ou_parts = [] %}
-                        {% for part in parts %}
-                          {% if part.startswith('OU=') %}
-                            {% set _ = ou_parts.append(part[3:]) %}
-                          {% endif %}
-                        {% endfor %}
-                        {{ ou_parts | reverse | join('\\') }}</td>
-                    <td>{{ row[5] }}</td>
-                    <td>{{ row[6]}}</td>
-                    <td>{{ row[7]}}</td>
-                    <td>{{ row[11] }}</td>
-                    <td>{{ row[12] }}</td>
-                    <td><a href="{{ url_for('view_request', request_id=row[0]) }}" class="btn btn-sm btn-info">Ansehen</a></td>
+                    <td>{{ row['id'] }}</td>
+                    <td>{{ row['referenceuser'] or 'N/A' }}</td>
+                    <td>{{ row['lastname'] }}, {{ row['firstname'] }}</td>
+                    <td>
+                        {% if row['department_dn'] %}
+                            {% set parts = row['department_dn'].split(',') %}
+                            {% set ou_parts = [] %}
+                            {% for part in parts %}{% if part.upper().startswith('OU=') %}{% set _ = ou_parts.append(part[3:]) %}{% endif %}{% endfor %}
+                            {{ ou_parts | reverse | join('\\') }}
+                        {% elif row['department'] %}{{ row['department'] }}{% else %}N/A{% endif %}
+                    </td>
+                    <td>{{ row['supervisor'] or 'N/A' }}</td>
+                    <td>{{ row['startdate'] | format_datetime('%d.%m.%Y') if row.startdate else 'N/A' }}</td>
+                    <td>{{ row['enddate'] | format_datetime('%d.%m.%Y') if row.enddate else 'N/A' }}</td>
+                    <td>{{ row['process_type'] | capitalize }}</td>
+                    <td>
+                        <span class="badge 
+                            {% if row.status == 'offen' %}bg-warning text-dark{% elif row.status == 'genehmigt' or row.status == 'in_bearbeitung' %}bg-info text-dark{% elif row.status == 'abgeschlossen' %}bg-success{% elif row.status == 'abgelehnt' %}bg-danger{% else %}bg-secondary{% endif %}">
+                            {{ row['status'] | replace('_', ' ') | capitalize }}
+                        </span>
+                    </td>
+                    <td>
+                        {# Alle Mitglieder von ADMIN_MAIN_GROUP dürfen den Antrag ansehen #}
+                        <a href="{{ url_for('view_request', request_id=row['id']) }}" class="btn btn-sm btn-info">Ansehen</a>
+                        {# Hier könnten weitere Aktionsbuttons basierend auf spezifischen Gruppen hinzugefügt werden, z.B.
+                           {% if is_user_in_group_for_template(ENV_IT_GROUP) %}
+                               <a href="{{ url_for('update_hardware_status', request_id=row['id']) }}" class="btn btn-sm btn-outline-secondary mt-1">IT-Status</a>
+                           {% endif %}
+                        #}
+                    </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7">Keine Anträge vorhanden.</td></tr>
+                <tr><td colspan="10" class="text-center">Keine offenen Anträge vorhanden.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

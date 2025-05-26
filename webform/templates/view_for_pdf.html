@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Antrag ID: {{ request.id }}</title>
+    </head>
+<body>
+    <div class="pdf-container" data-request-id="{{ request.id }}"> <h1>Antragsdetails ID: {{ request.id }}</h1>
+        <p class="centered-text subtitle-text">
+            Status: {{ request.status | replace('_', ' ') | capitalize }}
+            (Erstellt: {{ request.created_at | format_datetime('%d.%m.%Y %H:%M') }})
+        </p>
+
+        <div class="section-block">
+            <h2><span class="emoji-icon">📄</span> Antragssteller-Informationen</h2>
+            <dl>
+                <dt>Prozesstyp:</dt>
+                <dd>{{ request.process_type | capitalize }}</dd>
+                <dt>Nachname:</dt>
+                <dd>{{ request.lastname }}</dd>
+                <dt>Vorname:</dt>
+                <dd>{{ request.firstname }}</dd>
+                <dt>Geburtsdatum:</dt>
+                <dd>{{ request.birthdate | format_datetime('%d.%m.%Y') if request.birthdate else 'N/A' }}</dd>
+                <dt>Stellenbezeichnung:</dt>
+                <dd>{{ request.job_title or 'N/A' }}</dd>
+                {% if request.process_type == 'onboarding' and request.startdate %}
+                <dt>Startdatum:</dt>
+                <dd>{{ request.startdate | format_datetime('%d.%m.%Y') if request.startdate else 'N/A' }}</dd>
+                {% endif %}
+                {% if request.process_type == 'offboarding' and request.enddate %}
+                <dt>Austrittsdatum:</dt>
+                <dd>{{ request.enddate | format_datetime('%d.%m.%Y') if request.enddate else 'N/A' }}</dd>
+                {% endif %}
+            </dl>
+        </div>
+        <hr class="section-separator">
+
+        <div class="section-block" id="antragsuebersicht-block">
+            <h2><span class="emoji-icon">📋</span> Antragsübersicht (Bedarfe)</h2>
+            <dl>
+                <dt>Windows Konto benötigt:</dt>
+                <dd>{{ 'Ja' if request.required_windows else 'Nein' }}</dd>
+                {% if request.required_windows %}
+                    <dt class="sub-item">↳ Abteilung:</dt>
+                    <dd class="sub-item-value">{{ request.department or 'N/A' }} {% if request.department_dn %} ({{ request.department_dn }}) {% endif %}</dd>
+                    <dt class="sub-item">↳ Vorgesetzter:</dt>
+                    <dd class="sub-item-value">{{ request.supervisor or 'N/A' }}</dd>
+                    {% if request.referenceuser %}
+                    <dt class="sub-item">↳ Referenzbenutzer (AD):</dt>
+                    <dd class="sub-item-value">{{ request.referenceuser }}</dd>
+                    {% endif %}
+                {% endif %}
+                <dt>E-Mail Account benötigt:</dt>
+                <dd>{{ 'Ja' if request.email_account_required else 'Nein' }}</dd>
+                <dt>Hardware benötigt:</dt>
+                <dd>{{ 'Ja' if request.hardware_required else 'Nein' }}</dd>
+                <dt>Festarbeitsplatztelefon:</dt>
+                <dd>{{ 'Ja' if request.needs_fixed_phone else 'Nein' }}</dd>
+                <dt>Schlüssel benötigt:</dt>
+                <dd>{{ 'Ja' if request.key_required else 'Nein' }}</dd>
+                <dt>Zimmernummer (Antrag):</dt>
+                <dd>{{ request.room_number or 'N/A' }}</dd>
+                <dt>Arbeitsplatzausstattung:</dt>
+                {% if request.workplace_no_new_equipment %}
+                    <dd>Keine neue benötigt</dd>
+                {% else %}
+                    <dd>
+                        {% if request.workplace_needs_new_table %}<span>- Neuer Tisch</span><br>{% endif %}
+                        {% if request.workplace_needs_new_chair %}<span>- Neuer Stuhl</span><br>{% endif %}
+                        {% if request.workplace_needs_monitor_arms %}<span>- Monitorarme</span><br>{% endif %}
+                        {% if not request.workplace_needs_new_table and not request.workplace_needs_new_chair and not request.workplace_needs_monitor_arms %}
+                            <span>Keine spezifische neue Ausstattung angefordert</span>
+                        {% endif %}
+                    </dd>
+                {% endif %}
+                <dt>RIS Zugang benötigt:</dt>
+                <dd>{{ 'Ja' if request.needs_ris_access else 'Nein' }}</dd>
+                <dt>CIPKOM Zugang benötigt:</dt>
+                <dd>{{ 'Ja' if request.needs_cipkom_access else 'Nein' }}</dd>
+                {% if request.needs_cipkom_access and request.cipkom_reference_user %}
+                    <dt class="sub-item">↳ Referenzbenutzer (CIPKOM):</dt>
+                    <dd class="sub-item-value">{{ request.cipkom_reference_user }}</dd>
+                {% endif %}
+                {% if request.other_software_notes %}
+                    <dt>Sonstige Software:</dt>
+                    <dd><pre class="inline-pre">{{ request.other_software_notes }}</pre></dd>
+                {% endif %}
+                <dt>Vorzimmer informieren:</dt>
+                <dd>{{ 'Ja' if request.needs_office_notification else 'Nein' }}</dd>
+            </dl>
+        </div>
+        <hr class="section-separator">
+
+        {% if request.required_windows or request.email_account_required or request.needs_ris_access or request.needs_cipkom_access %}
+        <div class="section-block">
+            <h2><span class="emoji-icon">⚙️</span> IT Bearbeitungsstatus (Konten & Software)</h2>
+            <dl>
+                {% if request.required_windows %}
+                    <dt>Windows Account erstellt:</dt>
+                    <dd>
+                        {% if request.n8n_ad_creation_status == 'success' %}<span class="badge">Erfolgreich</span>{% elif request.n8n_ad_creation_status %}<span class="badge">Fehler: {{ request.n8n_ad_creation_status | capitalize }}</span>{% else %}Ausstehend{% endif %}
+                        {% if request.n8n_ad_username_created %} ({{ request.n8n_ad_username_created }}){% endif %}
+                    </dd>
+                    {% if request.n8n_ad_initial_password %}
+                        <dt>Initialpasswort:</dt><dd>{{ request.n8n_ad_initial_password }} <em>(Muss geändert werden)</em></dd>
+                    {% endif %}
+                    {% if request.n8n_ad_status_message %}<dt>AD Statusmeldung:</dt><dd><pre class="inline-pre">{{ request.n8n_ad_status_message }}</pre></dd>{% endif %}
+                {% endif %}
+                {% if request.email_account_required %}
+                    <dt>E-Mail Account Status:</dt>
+                    <dd>
+                        {% if request.email_created_address %}<span class="badge">Erfasst:</span> {{ request.email_created_address }}{% if request.email_creation_confirmed_at %} (am {{ request.email_creation_confirmed_at | format_datetime }} durch {{ request.email_creation_confirmed_by }}){% endif %}{% elif request.email_creation_notified_at %}<span class="badge">Support benachrichtigt</span>{% else %}Ausstehend{% endif %}
+                    </dd>
+                {% endif %}
+                {% if request.needs_ris_access %}
+                    <dt>RIS Zugang:</dt>
+                    <dd>{% if request.ris_access_status_granted_at %}<span class="badge">Erteilt</span> am {{ request.ris_access_status_granted_at | format_datetime }} (durch {{request.ris_access_status_granted_by}}){% else %}Ausstehend{% endif %}</dd>
+                {% endif %}
+                {% if request.needs_cipkom_access %}
+                    <dt>CIPKOM Zugang:</dt>
+                    <dd>{% if request.cipkom_access_status_granted_at %}<span class="badge">Erteilt</span> am {{ request.cipkom_access_status_granted_at | format_datetime }} (durch {{request.cipkom_access_status_granted_by}}){% else %}Ausstehend{% endif %}</dd>
+                {% endif %}
+            </dl>
+        </div>
+        <hr class="section-separator">
+        {% endif %}
+
+        <div class="section-block">
+            <h2><span class="emoji-icon">🧑‍⚖️</span> HR & AIDA Status</h2>
+            <h6 class="sub-block-header">HR Aufgaben (Onboarding):</h6>
+            {% if request.process_type == 'onboarding' %}
+            <dl>
+                <dt>Dienstvereinbarung:</dt>
+                <dd>{% if request.hr_dienstvereinbarung_at %}<span class="badge">Ja</span> ({{request.hr_dienstvereinbarung_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Datenschutzblatt:</dt>
+                <dd>{% if request.hr_datenschutz_at %}<span class="badge">Ja</span> ({{request.hr_datenschutz_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Über DSGVO informiert:</dt>
+                <dd>{% if request.hr_dsgvo_informed_at %}<span class="badge">Ja</span> ({{request.hr_dsgvo_informed_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Dienstanweisung IT:</dt>
+                <dd>{% if request.hr_it_directive_at %}<span class="badge">Ja</span> ({{request.hr_it_directive_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Personaldatenblatt Abrechnung:</dt>
+                <dd>{% if request.hr_payroll_sheet_at %}<span class="badge">Ja</span> ({{request.hr_payroll_sheet_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Leitlinien Informationssicherheit:</dt>
+                <dd>{% if request.hr_security_guidelines_at %}<span class="badge">Ja</span> ({{request.hr_security_guidelines_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+            </dl>
+            {% else %}
+            <p><em>Keine spezifischen Onboarding HR-Aufgaben für diesen Prozesstyp.</em></p>
+            {% endif %}
+            <h6 class="sub-block-header">AIDA Aufgaben:</h6>
+            <dl>
+                <dt>AIDA-Zugang erstellt:</dt>
+                <dd>{% if request.aida_access_created_at %}<span class="badge">Ja</span> ({{request.aida_access_created_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Schlüssel in AIDA aufgenommen:</dt>
+                <dd>{% if request.aida_key_registered_at %}<span class="badge">Ja</span> ({{request.aida_key_registered_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+            </dl>
+        </div>
+        <hr class="section-separator">
+
+        {% if request.needs_office_notification %}
+        <div class="section-block">
+            <h2><span class="emoji-icon">🏢</span> Vorzimmer Aufgaben Status</h2>
+            <dl>
+                <dt>Outlook-Kontakt angelegt:</dt>
+                <dd>{% if request.office_outlook_contact_at %}<span class="badge">Ja</span> ({{request.office_outlook_contact_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>In Verteilerlisten:</dt>
+                <dd>{% if request.office_distribution_lists_at %}<span class="badge">Ja</span> ({{request.office_distribution_lists_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Telefonliste ergänzt:</dt>
+                <dd>{% if request.office_phone_list_at %}<span class="badge">Ja</span> ({{request.office_phone_list_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Geburtstagskalender:</dt>
+                <dd>{% if request.office_birthday_calendar_at %}<span class="badge">Ja</span> ({{request.office_birthday_calendar_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Begrüßungsgeschenk:</dt>
+                <dd>{% if request.office_welcome_gift_at %}<span class="badge">Ja</span> ({{request.office_welcome_gift_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Termin Bürgermeister:</dt>
+                <dd>
+                    {% if request.office_mayor_appt_confirmed_at %}<span class="badge">Bestätigt</span> am {{ request.office_mayor_appt_date | format_datetime('%d.%m.%Y %H:%M') }}
+                    {% elif request.office_mayor_appt_date %}{{ request.office_mayor_appt_date | format_datetime('%d.%m.%Y %H:%M') }} (Unbestätigt)
+                    {% else %}Ausstehend{% endif %}
+                </dd>
+                <dt>Visitenkarten bestellt:</dt>
+                <dd>{% if request.office_business_cards_at %}<span class="badge">Ja</span> ({{request.office_business_cards_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Organigramm ergänzt:</dt>
+                <dd>{% if request.office_organigram_at %}<span class="badge">Ja</span> ({{request.office_organigram_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                <dt>Homepage aktualisiert:</dt>
+                <dd>{% if request.office_homepage_updated_at %}<span class="badge">Ja</span> ({{request.office_homepage_updated_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+            </dl>
+        </div>
+        <hr class="section-separator">
+        {% endif %}
+        
+        <div class="section-block">
+            <h2><span class="emoji-icon">🛠️</span> Hardware & Telefon Status</h2>
+            {% if request.hardware_required or request.needs_fixed_phone %}
+                <h6 class="sub-block-header">Beantragt:</h6>
+                <pre>{{ get_hardware_details_for_display(request) }}</pre>
+                <h6 class="sub-block-header">Fortschritt Bearbeitung:</h6>
+                {% if request.hardware_required %}
+                    <h6 class="sub-block-header sub-header-indent">Hardware-Komponenten:</h6>
+                    <dl class="sub-dl">
+                        <dt>Bestellt:</dt>
+                        <dd>{% if request.hw_status_ordered_at %}Ja, am {{ request.hw_status_ordered_at | format_datetime }} (durch {{ request.hw_status_ordered_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
+                        <dt>Geliefert:</dt>
+                        <dd>{% if request.hw_status_delivered_at %}Ja, am {{ request.hw_status_delivered_at | format_datetime }} (durch {{ request.hw_status_delivered_by }}){% elif request.hw_status_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                        <dt>Installiert:</dt>
+                        <dd>{% if request.hw_status_installed_at %}Ja, am {{ request.hw_status_installed_at | format_datetime }} (durch {{ request.hw_status_installed_by }}){% elif request.hw_status_delivered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                        <dt>Aufgebaut/Fertig:</dt>
+                        <dd>{% if request.hw_status_setup_done_at %}Ja, am {{ request.hw_status_setup_done_at | format_datetime }} (durch {{ request.hw_status_setup_done_by }}){% elif request.hw_status_installed_at %}Ausstehend{% else %}-{% endif %}</dd>
+                    </dl>
+                {% endif %}
+                {% if request.needs_fixed_phone %}
+                     <h6 class="sub-block-header sub-header-indent">Telefon:</h6>
+                     <dl class="sub-dl">
+                        <dt>Telefon Bestellt:</dt>
+                        <dd>{% if request.phone_status_ordered_at %}Ja, am {{ request.phone_status_ordered_at | format_datetime }} (durch {{ request.phone_status_ordered_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
+                        <dt>Telefon Aufgebaut/Installiert:</dt>
+                        <dd>
+                            {% if request.phone_status_setup_at %}Ja (Nr: {{request.phone_number_assigned or 'N/A'}}) am {{ request.phone_status_setup_at | format_datetime }} (durch {{ request.phone_status_setup_by }})
+                            {% elif request.phone_status_ordered_at %}Ausstehend
+                            {% else %}-{% endif %}
+                        </dd>
+                    </dl>
+                {% endif %}
+            {% else %}
+                <p><em>Keine Hardware oder Festnetztelefon für diesen Antrag angefordert.</em></p>
+            {% endif %}
+        </div>
+        <hr class="section-separator">
+
+        <div class="section-block">
+            <h2><span class="emoji-icon">🏗️</span> Bauamt Status (Schlüssel, Zimmer & Arbeitsplatz)</h2>
+            <h6 class="sub-block-header"><span class="emoji-icon">🔑</span> Schlüssel:</h6>
+            <dl>
+                <dt>Schlüssel benötigt:</dt>
+                <dd>{{ 'Ja' if request.key_required else 'Nein' }}</dd>
+                {% if request.key_required %}
+                    <dt>Vorbereitet:</dt>
+                    <dd>{% if request.key_status_prepared_at %}Ja, am {{ request.key_status_prepared_at | format_datetime }} ({{ request.key_status_prepared_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
+                    <dt>Ausgegeben:</dt>
+                    <dd>{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% elif request.key_status_prepared_at %}Ausstehend{% else %}-{% endif %}</dd>
+                    {% if request.key_issuance_protocol_filename %}
+                        <dt>Protokollname (intern):</dt>
+                        <dd>{{ request.key_issuance_protocol_filename }} <em>(Wird als Anhang im PDF mitgeführt)</em></dd>
+                    {% endif %}
+                {% endif %}
+            </dl>
+            <h6 class="sub-block-header"><span class="emoji-icon">🚪</span> Zimmer:</h6>
+            <dl>
+                <dt>Zimmernummer (Bauamt):</dt>
+                <dd>{{ request.room_number or 'Noch nicht festgelegt' }}</dd>
+            </dl>
+            <h6 class="sub-block-header"><span class="emoji-icon">🪑</span> Arbeitsplatzausstattung:</h6>
+            {% if request.workplace_no_new_equipment %}
+                <p><em>Keine neue Ausstattung laut Bauamt benötigt.</em></p>
+            {% else %}
+                {% if request.workplace_needs_new_table %}
+                    <dl class="sub-dl">
+                        <dt>Neuer Tisch bestellt:</dt>
+                        <dd>{% if request.workplace_table_ordered_at %}Ja, am {{request.workplace_table_ordered_at|format_datetime}} ({{request.workplace_table_ordered_by}}){% else %}Nein/Ausstehend{% endif %}</dd>
+                        <dt>Neuer Tisch aufgebaut:</dt>
+                        <dd>{% if request.workplace_table_setup_at %}Ja, am {{request.workplace_table_setup_at|format_datetime}} ({{request.workplace_table_setup_by}}){% elif request.workplace_table_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                    </dl>
+                {% endif %}
+                {% if request.workplace_needs_new_chair %}
+                    <dl class="sub-dl">
+                        <dt>Neuer Stuhl bestellt:</dt>
+                        <dd>{% if request.workplace_chair_ordered_at %}Ja, am {{request.workplace_chair_ordered_at|format_datetime}} ({{request.workplace_chair_ordered_by}}){% else %}Nein/Ausstehend{% endif %}</dd>
+                        <dt>Neuer Stuhl aufgebaut:</dt>
+                        <dd>{% if request.workplace_chair_setup_at %}Ja, am {{request.workplace_chair_setup_at|format_datetime}} ({{request.workplace_chair_setup_by}}){% elif request.workplace_chair_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                    </dl>
+                {% endif %}
+                {% if request.workplace_needs_monitor_arms %}
+                     <dl class="sub-dl">
+                        <dt>Monitorarme bestellt:</dt>
+                        <dd>{% if request.workplace_monitor_arms_ordered_at %}Ja, am {{request.workplace_monitor_arms_ordered_at|format_datetime}} ({{request.workplace_monitor_arms_ordered_by}}){% else %}Nein/Ausstehend{% endif %}</dd>
+                        <dt>Monitorarme montiert:</dt>
+                        <dd>{% if request.workplace_monitor_arms_setup_at %}Ja, am {{request.workplace_monitor_arms_setup_at|format_datetime}} ({{request.workplace_monitor_arms_setup_by}}){% elif request.workplace_monitor_arms_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                    </dl>
+                {% endif %}
+                {% if not request.workplace_needs_new_table and not request.workplace_needs_new_chair and not request.workplace_needs_monitor_arms and not request.workplace_no_new_equipment %}
+                     <p><em>Noch keine spezifische Auswahl zur Arbeitsplatzausstattung durch Bauamt getroffen.</em></p>
+                {% endif %}
+            {% endif %}
+        </div>
+        
+        {% if request.comments %}
+        <div class="section-block print-page-break-before">
+            <h2><span class="emoji-icon">📝</span> Kommentare des Antragstellers</h2>
+            <pre>{{ request.comments }}</pre>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

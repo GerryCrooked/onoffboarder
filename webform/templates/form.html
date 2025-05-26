@@ -2,537 +2,541 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>On-/Offboarding</title>
+    <title>On-/Offboarding Formular</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/themes/default/style.min.css" rel="stylesheet">
     <style>
-        .hidden {
-            display: none;
-        }
-        /* Optional: Styling für Ladeanzeige */
-        .loading-placeholder::after {
-            content: " Lade...";
-            font-style: italic;
-            color: #6c757d;
-        }
+        .hidden { display: none; }
+        body { padding-top: 70px; }
+        .navbar { margin-bottom: 1rem !important; }
+        .form-section-heading { margin-top: 1.5rem; margin-bottom: 0.5rem; padding-bottom: 0.25rem; border-bottom: 1px solid #eee;}
     </style>
 </head>
-<body class="p-4">
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
+<body class="pt-4">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
-        <a class="navbar-brand" href="/">On-/Offboarding</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavForm">
             <span class="navbar-toggler-icon"></span>
         </button>
-        <div class="collapse navbar-collapse" id="navbarNav">
+        <div class="collapse navbar-collapse" id="navbarNavForm">
             <ul class="navbar-nav me-auto">
-                <li class="nav-item">
-                    <a class="nav-link" href="/">Formular</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="/admin">Admin</a>
-                </li>
-                <li>
-                    <a class="nav-link" href="/archived">Archiv</a>
-                </li>
+                {% if session.is_admin %} {# ENV_ADMIN_MAIN_GROUP #}
+                    <li class="nav-item"><a class="nav-link active" aria-current="page" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% elif is_user_in_group_for_template(ENV_MAIN_ACCESS_GROUP) %}
+                    {# Fallback für User, die in der Hauptgruppe, aber nicht Admin sind #}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Übersicht</a></li>
+                {% endif %}
             </ul>
             <ul class="navbar-nav">
                 {% if session.user %}
-                <li class="nav-item">
-                    <a class="nav-link" href="#">👤 {{ session.user }}</a>
-                </li>
-                <li class="nav-item">
-                    <a class="nav-link" href="/logout">Logout</a>
-                </li>
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
                 {% else %}
-                <li class="nav-item">
-                    <a class="nav-link" href="/login">Login</a>
-                </li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login') }}">Login</a></li>
                 {% endif %}
             </ul>
         </div>
     </div>
 </nav>
 
-    <div class="container">
-        <h1>On-/Offboarding Formular</h1>
+<div class="container" style="padding-top: 20px;">
+    <h1>On-/Offboarding Formular</h1>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category or 'info' }} alert-dismissible fade show" role="alert">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+    <form method="POST" id="onoffboarding-form">
+        <h5 class="form-section-heading">Allgemeine Informationen</h5>
+        <div class="mb-3">
+            <label for="process_type" class="form-label">Prozess</label>
+            <select id="process_type" name="process_type" class="form-select">
+                <option value="onboarding" {{ 'selected' if (form_data.get('process_type') == 'onboarding') or not form_data.get('process_type') else '' }}>Onboarding</option>
+                <option value="offboarding" {{ 'selected' if form_data.get('process_type') == 'offboarding' else '' }}>Offboarding</option>
+            </select>
+        </div>
+        <div class="mb-3">
+            <label for="lastname" class="form-label">Nachname</label>
+            <input type="text" id="lastname" name="lastname" class="form-control" value="{{ form_data.get('lastname', '') }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="firstname" class="form-label">Vorname</label>
+            <input type="text" id="firstname" name="firstname" class="form-control" value="{{ form_data.get('firstname', '') }}" required>
+        </div>
+        <div class="mb-3">
+            <label for="birthdate" class="form-label">Geburtsdatum</label>
+            <input type="date" id="birthdate" name="birthdate" class="form-control" value="{{ form_data.get('birthdate', '') }}">
+        </div>
+        <div class="mb-3">
+            <label for="job_title" class="form-label">Stellenbezeichnung</label>
+            <input type="text" id="job_title" name="job_title" class="form-control" value="{{ form_data.get('job_title', '') }}">
+        </div>
 
+         <div class="row">
+            <div class="col-md-6 mb-3">
+                <label for="startdate" class="form-label">Startdatum (Onboarding)</label>
+                <input type="date" id="startdate" name="startdate" class="form-control" value="{{ form_data.get('startdate', today) }}">
+            </div>
+            <div class="col-md-6 mb-3">
+                <label for="enddate" class="form-label">Austrittsdatum (Offboarding)</label>
+                <input type="date" id="enddate" name="enddate" class="form-control" value="{{ form_data.get('enddate', '') }}">
+            </div>
+        </div>
 
-        <form method="POST" id="onoffboarding-form">
+        <h5 class="form-section-heading">IT-Ausstattung & Zugänge</h5>
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_windows_user" name="needs_windows_user" value="true" onchange="toggleWindowsUserFields()" {{ 'checked' if form_data.get('needs_windows_user') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_windows_user">Windows Benutzerkonto benötigt</label>
+        </div>
+        <div id="windows_user_fields" class="{{ '' if form_data.get('needs_windows_user') == 'true' else 'hidden' }}">
             <div class="mb-3">
-                <label for="process_type" class="form-label">Prozess</label>
-                <select id="process_type" name="process_type" class="form-select">
-                    <option value="onboarding">Onboarding</option>
-                    <option value="offboarding">Offboarding</option>
+                <label class="form-label">Abteilung (aus OU wählen)</label>
+                <input type="text" id="department" name="department" class="form-control" value="{{ form_data.get('department', '') }}" readonly>
+                <input type="hidden" id="department_dn" name="department_dn" value="{{ form_data.get('department_dn', '') }}">
+                <div id="ou-tree" class="border p-2 mt-2" style="max-height: 300px; overflow-y: auto;">
+                    <p class="loading-placeholder">Abteilungsstruktur lädt...</p>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label for="referenceuser" class="form-label">Referenzbenutzer (Windows Account, optional)</label>
+                <select id="referenceuser" name="referenceuser" class="form-select">
+                    <option value="">{{ 'Lade Benutzer...' if form_data.get('department_dn') else 'Bitte Abteilung wählen' }}</option>
                 </select>
             </div>
-
             <div class="mb-3">
-                <label for="lastname" class="form-label">Nachname</label>
-                <input type="text" id="lastname" name="lastname" class="form-control" value="{{ form_data.lastname if form_data else '' }}" required>
+                <label for="supervisor" class="form-label">Vorgesetzter</label>
+                <select id="supervisor" name="supervisor" class="form-select">
+                    <option value="">{{ 'Lade Vorgesetzte...' if form_data.get('department_dn') else 'Vorgesetzte laden...' }}</option>
+                </select>
             </div>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_email_account" name="needs_email_account" value="true" {{ 'checked' if form_data.get('needs_email_account') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_email_account">E-Mail Adresse benötigt</label>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_hardware" name="needs_hardware" value="true" onchange="toggleHardwareFields()" {{ 'checked' if form_data.get('needs_hardware') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_hardware">Hardware wird benötigt</label>
+        </div>
+        <div id="hardware_fields" class="{{ '' if form_data.get('needs_hardware') == 'true' else 'hidden' }}">
+            <h6>Hardware-Details</h6>
             <div class="mb-3">
-                <label for="firstname" class="form-label">Vorname</label>
-                <input type="text" id="firstname" name="firstname" class="form-control" value="{{ form_data.firstname if form_data else '' }}" required>
-            </div>
-             <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label for="startdate" class="form-label">Startdatum (Onboarding)</label>
-                    <input type="date" id="startdate" name="startdate" class="form-control" value="{{ form_data.startdate if form_data else today }}">
-                </div>
-                <div class="col-md-6 mb-3">
-                    <label for="enddate" class="form-label">Austrittsdatum (Offboarding)</label>
-                    <input type="date" id="enddate" name="enddate" class="form-control" value="{{ form_data.enddate if form_data else '' }}">
-                </div>
-            </div>
-
-
-            <div class="mb-3 form-check">
-                <input type="checkbox" class="form-check-input" id="needs_windows_user" name="needs_windows_user" value="true" onchange="toggleWindowsUserFields()" {{ 'checked' if form_data and form_data.needs_windows_user == 'true' else '' }}>
-                <label class="form-check-label" for="needs_windows_user">Windows Benutzerkonto benötigt</label>
-            </div>
-
-            <div id="windows_user_fields" class="{{ 'hidden' if not form_data or form_data.needs_windows_user != 'true' else '' }}">
-                 <hr>
-                 <h5>Angaben für Windows Benutzerkonto</h5>
-                <div class="mb-3">
-                    <label class="form-label">Abteilung (aus OU wählen)</label>
-                    <input type="text" id="department" name="department" class="form-control" value="{{ form_data.department if form_data else '' }}" readonly required>
-                    <input type="hidden" id="department_dn" name="department_dn" value="{{ form_data.department_dn if form_data else '' }}">
-                    <div id="ou-tree" class="border p-2 mt-2" style="max-height: 300px; overflow-y: scroll;">
-                         <p class="loading-placeholder">Abteilungsstruktur</p> </div>
-                </div>
-
-                <div class="mb-3">
-                    <label for="referenceuser" class="form-label">Referenzbenutzer (optional)</label>
-                    <select id="referenceuser" name="referenceuser" class="form-select">
-                        <option value="">Bitte Abteilung wählen</option>
-                    </select>
-                </div>
-
-                <div class="mb-3">
-                    <label for="supervisor" class="form-label">Vorgesetzter</label>
-                    <select id="supervisor" name="supervisor" class="form-select" required>
-                         <option value="" class="loading-placeholder">Vorgesetzte</option> </select>
-                </div>
-                 <hr>
-            </div>
-
-            <div class="mb-3 form-check">
-                <input type="checkbox" class="form-check-input" id="needs_hardware" name="needs_hardware" value="true" onchange="toggleHardwareFields()" {{ 'checked' if form_data and form_data.needs_hardware == 'true' else '' }}>
-                <label class="form-check-label" for="needs_hardware">Hardware wird benötigt</label>
-            </div>
-
-            <div id="hardware_fields" class="{{ 'hidden' if not form_data or form_data.needs_hardware != 'true' else '' }}">
-                 <hr>
-                 <h5>Hardware</h5>
-                 <div class="mb-3">
-                     <label>Computer:</label><br>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_computer" value="Computer bereits vorhanden" id="hwComputer0">
-                         <label class="form-check-label" for="hwComputer0">Gerät bereits vorhanden</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_computer" value="Computer" id="hwComputer1">
-                         <label class="form-check-label" for="hwComputer1">Computer (Festarbeitsplatz Rechner)</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_computer" value="Laptop" id="hwComputer2">
-                         <label class="form-check-label" for="hwComputer2">Laptop</label>
-                     </div>
-
-                     <div class="form-check mt-2" id="dockingstationDiv" style="display: none;">
-                         <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Dockingstation" id="Dockingstation">
-                         <label class="form-check-label" for="Dockingstation">Dockingstation benötigt</label>
-                     </div>
-                 </div>
-
-                 <div class="mb-3">
-                     <label>Monitor:</label><br>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_monitor" value="Monitor(e) bereits vorhanden" id="monitor0">
-                         <label class="form-check-label" for="monitor0">Monitor(e) bereits vorhanden</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_monitor" value="1 Monitor" id="monitor1">
-                         <label class="form-check-label" for="monitor1">1 Monitor</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="radio" name="hardware_monitor" value="2 Monitore" id="monitor2">
-                         <label class="form-check-label" for="monitor2">2 Monitore</label>
-                     </div>
-                 </div>
-
-                 <div class="mb-3">
-                     <label>Zubehör:</label><br>
-                     <div class="form-check">
-                         <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Maus und Tastatur" id="accessories0">
-                         <label class="form-check-label" for="accessories0">Maus und Tastatur</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Headset" id="accessories1">
-                         <label class="form-check-label" for="accessories1">Headset</label>
-                     </div>
-                     <div class="form-check">
-                         <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Webcam" id="accessories2">
-                         <label class="form-check-label" for="accessories2">Webcam</label>
-                     </div>
-                 </div>
-                 <hr>
-            </div>
-
-            <div class="mb-3">
-                 <label>Mobiles Datenendgerät:</label><br>
-                 <div class="form-check">
-                     <input class="form-check-input" type="checkbox" name="hardware_mobile[]" value="Tablet" id="mobileTablet">
-                     <label class="form-check-label" for="mobileTablet">Tablet</label>
-                 </div>
-                 <div class="form-check">
-                     <input class="form-check-input" type="checkbox" name="hardware_mobile[]" value="Handy" id="mobileHandy">
-                     <label class="form-check-label" for="mobileHandy">Handy</label>
-                 </div>
-             </div>
-
-            <div class="mb-3">
-                <label>Zutrittsverwaltung:</label>
+                <label>Computer:</label><br>
                 <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="key_required" id="key_required" value="true" {{ 'checked' if form_data and form_data.key_required == 'true' else '' }}>
-                    <label class="form-check-label" for="key_required">Schlüssel benötigt</label>
+                    <input class="form-check-input" type="radio" name="hardware_computer" value="Computer bereits vorhanden" id="hwComputer0" {{ 'checked' if form_data.get('hardware_computer') == 'Computer bereits vorhanden' else '' }}>
+                    <label class="form-check-label" for="hwComputer0">Gerät bereits vorhanden</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="hardware_computer" value="Computer" id="hwComputer1" {{ 'checked' if form_data.get('hardware_computer') == 'Computer' else '' }}>
+                    <label class="form-check-label" for="hwComputer1">Computer (Festarbeitsplatz Rechner)</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="hardware_computer" value="Laptop" id="hwComputer2" {{ 'checked' if form_data.get('hardware_computer') == 'Laptop' else '' }}>
+                    <label class="form-check-label" for="hwComputer2">Laptop</label>
+                </div>
+                <div class="form-check mt-2" id="dockingstationDiv" style="display: none;">
+                    <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Dockingstation" id="Dockingstation" 
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Dockingstation' in form_data.getlist('hardware_accessories[]') else '' }}>
+                    <label class="form-check-label" for="Dockingstation">Dockingstation benötigt</label>
                 </div>
             </div>
-
             <div class="mb-3">
-                <label for="comments" class="form-label">Kommentare</label>
-                <textarea id="comments" name="comments" class="form-control">{{ form_data.comments if form_data else '' }}</textarea>
+                <label>Monitor:</label><br>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="hardware_monitor" value="Monitor(e) bereits vorhanden" id="monitor0" {{ 'checked' if form_data.get('hardware_monitor') == 'Monitor(e) bereits vorhanden' else '' }}>
+                    <label class="form-check-label" for="monitor0">Monitor(e) bereits vorhanden</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="hardware_monitor" value="1 Monitor" id="monitor1" {{ 'checked' if form_data.get('hardware_monitor') == '1 Monitor' else '' }}>
+                    <label class="form-check-label" for="monitor1">1 Monitor</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="radio" name="hardware_monitor" value="2 Monitore" id="monitor2" {{ 'checked' if form_data.get('hardware_monitor') == '2 Monitore' else '' }}>
+                    <label class="form-check-label" for="monitor2">2 Monitore</label>
+                </div>
             </div>
+            <div class="mb-3">
+                <label>Zubehör:</label><br>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Maus und Tastatur" id="accessories0"
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Maus und Tastatur' in form_data.getlist('hardware_accessories[]') else '' }}>
+                    <label class="form-check-label" for="accessories0">Maus und Tastatur</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Headset" id="accessories1"
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Headset' in form_data.getlist('hardware_accessories[]') else '' }}>
+                    <label class="form-check-label" for="accessories1">Headset</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="hardware_accessories[]" value="Webcam" id="accessories2"
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Webcam' in form_data.getlist('hardware_accessories[]') else '' }}>
+                    <label class="form-check-label" for="accessories2">Webcam</label>
+                </div>
+            </div>
+             <div class="mb-3">
+                <label>Mobiles Datenendgerät:</label><br>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="hardware_mobile[]" value="Tablet" id="mobileTablet"
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Tablet' in form_data.getlist('hardware_mobile[]') else '' }}>
+                    <label class="form-check-label" for="mobileTablet">Tablet</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="hardware_mobile[]" value="Handy" id="mobileHandy"
+                           {{ 'checked' if form_data and hasattr(form_data, 'getlist') and 'Handy' in form_data.getlist('hardware_mobile[]') else '' }}>
+                    <label class="form-check-label" for="mobileHandy">Handy</label>
+                </div>
+            </div>
+            <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="needs_fixed_phone" name="needs_fixed_phone" value="true" {{ 'checked' if form_data.get('needs_fixed_phone') == 'true' else '' }}>
+                <label class="form-check-label" for="needs_fixed_phone">Festarbeitsplatztelefon benötigt</label>
+            </div>
+        </div>
 
-            <button type="submit" class="btn btn-primary">Absenden</button>
-        </form>
-    </div>
+        <h5 class="form-section-heading">Software & Fachanwendungen</h5>
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_ris_access" name="needs_ris_access" value="true" {{ 'checked' if form_data.get('needs_ris_access') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_ris_access">RIS Zugang</label>
+        </div>
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_cipkom_access" name="needs_cipkom_access" value="true" onchange="toggleCipkomRefUserField()" {{ 'checked' if form_data.get('needs_cipkom_access') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_cipkom_access">CIPKOM Zugang</label>
+        </div>
+        <div id="cipkom_reference_user_div" class="mb-3 ms-4 {{ '' if form_data.get('needs_cipkom_access') == 'true' else 'hidden' }}">
+            <label for="cipkom_reference_user" class="form-label">Referenzbenutzer für CIPKOM (optional):</label>
+            <input type="text" class="form-control form-control-sm" id="cipkom_reference_user" name="cipkom_reference_user" value="{{ form_data.get('cipkom_reference_user', '') }}">
+        </div>
+        <div class="mb-3">
+            <label for="other_software_notes" class="form-label">Sonstige benötigte Spezialsoftware:</label>
+            <textarea class="form-control" id="other_software_notes" name="other_software_notes" rows="3">{{ form_data.get('other_software_notes', '') }}</textarea>
+        </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/jstree.min.js"></script>
-    <script>
+        <h5 class="form-section-heading">Bauamt (Schlüssel, Zimmer & Arbeitsplatz)</h5>
+        <div class="mb-3 form-check">
+            <input class="form-check-input" type="checkbox" name="key_required" id="key_required" value="true" {{ 'checked' if form_data.get('key_required') == 'true' else '' }}>
+            <label class="form-check-label" for="key_required">Schlüssel benötigt</label>
+        </div>
+        <div class="mb-3">
+            <label for="room_number" class="form-label">Zimmernummer (optional):</label>
+            <input type="text" class="form-control" id="room_number" name="room_number" value="{{ form_data.get('room_number', '') }}">
+        </div>
+        <h6>Benötigte Arbeitsplatzausstattung (neu):</h6>
+        <div class="form-check">
+            <input class="form-check-input workplace-equipment" type="checkbox" value="true" id="workplace_needs_new_table" name="workplace_needs_new_table" onchange="handleWorkplaceSelectionChange(this)" {{ 'checked' if form_data.get('workplace_needs_new_table') == 'true' else '' }}>
+            <label class="form-check-label" for="workplace_needs_new_table">Neuer Tisch notwendig</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input workplace-equipment" type="checkbox" value="true" id="workplace_needs_new_chair" name="workplace_needs_new_chair" onchange="handleWorkplaceSelectionChange(this)" {{ 'checked' if form_data.get('workplace_needs_new_chair') == 'true' else '' }}>
+            <label class="form-check-label" for="workplace_needs_new_chair">Neuer Stuhl notwendig</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input workplace-equipment" type="checkbox" value="true" id="workplace_needs_monitor_arms" name="workplace_needs_monitor_arms" onchange="handleWorkplaceSelectionChange(this)" {{ 'checked' if form_data.get('workplace_needs_monitor_arms') == 'true' else '' }}>
+            <label class="form-check-label" for="workplace_needs_monitor_arms">Monitorarme notwendig</label>
+        </div>
+        <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" value="true" id="workplace_no_new_equipment" name="workplace_no_new_equipment" onchange="handleNoNewEquipmentChange(this)" {{ 'checked' if form_data.get('workplace_no_new_equipment') == 'true' else '' }}>
+            <label class="form-check-label" for="workplace_no_new_equipment">Keine neue Arbeitsplatzausstattung notwendig</label>
+        </div>
+        <hr>
 
-        // Funktion zum Umschalten der Sichtbarkeit der Windows-Benutzer-Felder
-        function toggleWindowsUserFields() {
-            // ... (Code bleibt unverändert) ...
-             console.log("toggleWindowsUserFields aufgerufen");
-            const windowsUserFields = $('#windows_user_fields');
-            const needsWindowsUserCheckbox = $('#needs_windows_user');
-            const departmentInput = $('#department');
-            const supervisorSelect = $('#supervisor');
-            const ouTreeDiv = $('#ou-tree');
-            const isChecked = needsWindowsUserCheckbox.prop('checked');
-            console.log("needsWindowsUserCheckbox checked:", isChecked);
+        <h5 class="form-section-heading">Weitere Benachrichtigungen</h5>
+        <div class="mb-3 form-check">
+            <input type="checkbox" class="form-check-input" id="needs_office_notification" name="needs_office_notification" value="true" {{ 'checked' if form_data.get('needs_office_notification') == 'true' else '' }}>
+            <label class="form-check-label" for="needs_office_notification">Vorzimmer informieren (für Onboarding-Aufgaben)</label>
+        </div>
+        <hr>
 
-            windowsUserFields.toggleClass('hidden', !isChecked);
-            console.log("windowsUserFields visibility:", windowsUserFields.is(':visible'));
+        <div class="mb-3">
+            <label for="comments" class="form-label">Kommentare</label>
+            <textarea id="comments" name="comments" class="form-control" rows="3">{{ form_data.get('comments', '') }}</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">Absenden</button>
+    </form>
+</div>
 
-            departmentInput.prop('required', isChecked);
-            supervisorSelect.prop('required', isChecked);
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/jstree.min.js"></script>
+<script>
+    // JavaScript Logik (wie von Ihnen bereitgestellt, ggf. leicht angepasst für Konsistenz)
+    function toggleWindowsUserFields() {
+        const windowsUserFields = $('#windows_user_fields');
+        const needsWindowsUserCheckbox = $('#needs_windows_user');
+        const departmentInput = $('#department');
+        const supervisorSelect = $('#supervisor'); 
+        const ouTreeDiv = $('#ou-tree');
+        const isChecked = needsWindowsUserCheckbox.prop('checked');
 
-            if (isChecked && !ouTreeDiv.data('jstree')) {
-                 console.log("Initialisiere jsTree");
-                 ouTreeDiv.jstree({
-                    'core': {
-                        'data': {
-                            'url': '/ou_tree',
-                            'dataType': 'json',
-                             'error': function(jqXHR, textStatus, errorThrown) {
-                                console.error("Fehler beim Laden des OU-Baums:", textStatus, errorThrown);
-                                ouTreeDiv.html('<p class="text-danger">Fehler beim Laden der Abteilungsstruktur.</p>');
-                            }
+        windowsUserFields.toggleClass('hidden', !isChecked);
+        departmentInput.prop('required', isChecked); 
+        supervisorSelect.prop('required', isChecked);
+
+        if (isChecked && ouTreeDiv.jstree(true) == false) { 
+             ouTreeDiv.html(''); 
+             ouTreeDiv.jstree({
+                'core': { 
+                    'data': { 
+                        'url': "{{ url_for('ou_tree') }}", // Jinja für URL verwenden
+                        'dataType': 'json', 
+                        'error': function(jqXHR, textStatus, errorThrown) {
+                            console.error("Fehler beim Laden des OU-Baums:", textStatus, errorThrown);
+                            ouTreeDiv.html('<p class="text-danger">Fehler beim Laden der Abteilungsstruktur.</p>');
                         }
                     }
-                 }).on('loaded.jstree', function() {
-                      console.log("jsTree geladen.");
-                      ouTreeDiv.find('p').remove();
-                 });
-            } else if (!isChecked && ouTreeDiv.data('jstree')) {
-                 departmentInput.val('');
-                 $('#department_dn').val('');
-                 $('#referenceuser').empty().append(new Option("Bitte wählen", ""));
-                 loadInitialSupervisors();
-            }
-        };
+                }
+            });
+        } else if (!isChecked) {
+            departmentInput.val(''); 
+            $('#department_dn').val('');
+            $('#referenceuser').empty().append(new Option("Bitte Abteilung wählen", ""));
+            loadInitialSupervisors(); 
+        }
+    };
 
-        // Funktion zum Umschalten der Sichtbarkeit der Hardware-Felder
-        function toggleHardwareFields() {
-            // ... (Code bleibt unverändert) ...
-             console.log("toggleHardwareFields aufgerufen");
-            const hardwareFieldsDiv = $('#hardware_fields');
-            const needsHardwareCheckbox = $('#needs_hardware');
-            const isChecked = needsHardwareCheckbox.prop('checked');
-            console.log("needsHardwareCheckbox checked:", isChecked);
+    function toggleHardwareFields() {
+        const hardwareFieldsDiv = $('#hardware_fields');
+        const needsHardwareCheckbox = $('#needs_hardware');
+        const isChecked = needsHardwareCheckbox.prop('checked');
+        hardwareFieldsDiv.toggleClass('hidden', !isChecked);
 
-            hardwareFieldsDiv.toggleClass('hidden', !isChecked);
-            console.log("hardwareFieldsDiv visibility:", hardwareFieldsDiv.is(':visible'));
-
-             $('input[name="hardware_computer"]').prop('required', isChecked);
-             $('input[name="hardware_monitor"]').prop('required', isChecked);
-
-             if (!isChecked) {
-                   $('input[name="hardware_computer"]').prop('checked', false);
-                   $('input[name="hardware_monitor"]').prop('checked', false);
-                   $('input[name="hardware_accessories[]"]').prop('checked', false);
-                   $('#dockingstationDiv').hide();
-             }
-        };
-
-        // Hilfsfunktion zum Befüllen der Vorgesetzten-Liste
-        function populateSupervisorDropdown(supervisors) {
-            const supervisorSelect = $('#supervisor');
-            supervisorSelect.empty().append('<option value="">--- Bitte wählen ---</option>');
-
-            if (supervisors && supervisors.length > 0) {
-                 console.log(`Fülle Vorgesetzten-Dropdown mit ${supervisors.length} Einträgen.`);
-                 supervisors.forEach(supervisor => {
-                    // --- HIER ANPASSEN an die ECHTEN Namen aus der /supervisors Antwort ---
-                    // Annahmen aktuell: 'name', 'mail', 'dn'
-                    // Mögliche echte Namen: 'displayName', 'email', 'userPrincipalName', 'distinguishedName', 'cn' etc.
-                    // Prüfe die Antwort im Netzwerk-Tab!
-
-                    // PASSE HIER AN: Den anzuzeigenden Text zusammenbauen
-                    // Beispiel: Verwende 'displayName' statt 'name' und 'mail'
-                    let supervisorText = supervisor.name + (supervisor.mail ? ` (${supervisor.mail})` : '');
-                    // Z.B.: let supervisorText = supervisor.displayName + (supervisor.mail ? ` (${supervisor.mail})` : '');
-
-                    // PASSE HIER AN: Den Wert für das <option> Element bestimmen (z.B. E-Mail oder DN)
-                    // Beispiel: Verwende 'mail' als primären Wert, sonst 'dn', sonst 'displayName'
-                    let supervisorValue = supervisor.mail ? supervisor.mail : (supervisor.dn ? supervisor.dn : supervisor.name);
-                    // Z.B.: let supervisorValue = supervisor.mail ? supervisor.mail : (supervisor.distinguishedName ? supervisor.distinguishedName : supervisor.displayName);
-
-                    console.debug(`Füge Option hinzu: Text='${supervisorText}', Wert='${supervisorValue}'`); // Logge was hinzugefügt wird
-                    supervisorSelect.append($('<option>', {
-                        value: supervisorValue,
-                        text: supervisorText
-                    }));
-                 });
+        if (!isChecked) { 
+            $('input[name="hardware_computer"]').prop('checked', false);
+            $('input[name="hardware_monitor"]').prop('checked', false);
+            $('input[name="hardware_accessories[]"]').prop('checked', false);
+            $('input[name="needs_fixed_phone"]').prop('checked', false);
+            $('input[name="hardware_mobile[]"]').prop('checked', false);
+            $('#dockingstationDiv').hide();
+        } else { 
+             if ($('input[name="hardware_computer"][value="Laptop"]').is(':checked')) {
+                $('#dockingstationDiv').show();
             } else {
-                 console.log("Keine Vorgesetzten zum Befüllen des Dropdowns gefunden.");
-                 supervisorSelect.append('<option value="" disabled>Keine Vorgesetzten gefunden</option>');
+                $('#dockingstationDiv').hide();
             }
         }
+    };
 
-        // Funktion zum Laden der Referenzbenutzer für eine OU
-        function fetchUsersForReference(ouDn) {
-             const referenceUserSelect = $('#referenceuser');
-             referenceUserSelect.empty().append(new Option("Lade Benutzer...", ""));
+    function toggleCipkomRefUserField() {
+        const cipkomCheckbox = $('#needs_cipkom_access');
+        const cipkomRefDiv = $('#cipkom_reference_user_div');
+        const cipkomRefInput = $('#cipkom_reference_user');
+        const isChecked = cipkomCheckbox.prop('checked');
+        cipkomRefDiv.toggleClass('hidden', !isChecked);
+        if (!isChecked) {
+            cipkomRefInput.val('');
+        }
+    }
 
-             const url = `/ou_users?dn=${encodeURIComponent(ouDn)}`;
-             console.log("Lade Referenzbenutzer von:", url);
-
-             fetch(url)
-                .then(response => {
-                     if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                     return response.json();
-                 })
-                 .then(users => {
-                     console.log(`Empfangene Referenzbenutzer (${users.length}):`, users);
-                     referenceUserSelect.empty().append(new Option("--- Bitte wählen ---", ""));
-                     if (users && users.length > 0) {
-                        users.forEach(user => {
-                            // --- HIER ANPASSEN an die ECHTEN Namen aus der /ou_users Antwort ---
-                            // Annahmen aktuell: 'name', 'sAMAccountName'
-                            // Mögliche echte Namen: 'displayName', 'samAccountName', 'cn' etc.
-                            // Prüfe die Antwort im Netzwerk-Tab!
-
-                            // PASSE HIER AN: Den Wert bestimmen (z.B. sAMAccountName)
-                            let userValue = user.sAMAccountName ? user.sAMAccountName : user.name; // Aktuell: sAMAccountName oder Name
-                            // Z.B.: let userValue = user.samAccountName ? user.samAccountName : user.displayName;
-
-                            // PASSE HIER AN: Den anzuzeigenden Text zusammenbauen
-                            let userText = user.name + (user.sAMAccountName ? ` (${user.sAMAccountName})` : ''); // Aktuell: Name (sAMAccountName)
-                            // Z.B.: let userText = user.displayName + (user.samAccountName ? ` (${user.samAccountName})` : '');
-
-                            console.debug(`Füge Referenz-Option hinzu: Text='${userText}', Wert='${userValue}'`);
-                            referenceUserSelect.append(new Option(userText, userValue));
-                        });
-                     } else {
-                          referenceUserSelect.append('<option value="" disabled>Keine Benutzer in OU</option>');
-                     }
-                 })
-                 .catch(error => {
-                     console.error("Fehler beim Laden der Referenzbenutzer:", error);
-                     referenceUserSelect.empty().append('<option value="">Fehler beim Laden</option>');
-                 });
-         }
-
-         // Funktion zum Laden der Supervisoren für eine OU
-         function fetchAndSetSupervisorsForOu(ouDn) {
-             const url = `/supervisors?dn=${encodeURIComponent(ouDn)}`; // Korrekte URL
-             console.log("Lade Vorgesetzten-Liste von:", url);
-              $('#supervisor').empty().append('<option value="" class="loading-placeholder">Vorgesetzte</option>'); // Ladeanzeige
-
-             fetch(url)
-                 .then(response => {
-                     if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                     return response.json();
-                 })
-                 .then(supervisorList => {
-                     populateSupervisorDropdown(supervisorList); // Verwende Hilfsfunktion
-                 })
-                 .catch(error => {
-                     console.error("Fehler beim Laden der Vorgesetzten für OU:", error);
-                      $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>');
-                 });
-         }
-
-         // Funktion zum initialen Laden aller Supervisoren
-         function loadInitialSupervisors() {
-              const url = '/supervisors'; // Korrekte URL ohne DN
-              console.log("Lade initiale Vorgesetzten-Liste von:", url);
-              // Setze Platzhalter während des Ladens
-              $('#supervisor').empty().append('<option value="" class="loading-placeholder">Vorgesetzte</option>');
-
-
-              fetch(url)
-                  .then(response => {
-                     if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                     return response.json();
-                  })
-                  .then(supervisorList => {
-                      populateSupervisorDropdown(supervisorList); // Verwende Hilfsfunktion
-                  })
-                  .catch(error => {
-                      console.error("Fehler beim initialen Laden aller Vorgesetzten:", error);
-                       $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>');
-                  });
-         }
-
-
-        $(document).ready(function () {
-            const departmentInput = $('#department');
-            const departmentDnInput = $('#department_dn');
-            const ouTreeDiv = $('#ou-tree');
-
-            // Lade initial ALLE Vorgesetzten
-            loadInitialSupervisors();
-
-            // Event Handler für OU Tree Auswahl
-            ouTreeDiv.on("select_node.jstree", function (e, data) {
-                 const selectedNode = data.node;
-                 const dn = selectedNode.data?.dn;
-                 const name = selectedNode.text;
-
-                 if (dn) {
-                    console.log("OU ausgewählt:", name, "DN:", dn);
-                    departmentInput.val(name);
-                    departmentDnInput.val(dn);
-                    fetchUsersForReference(dn);
-                    fetchAndSetSupervisorsForOu(dn);
-                 } else {
-                     console.warn("Ausgewählter Knoten hat keinen DN:", selectedNode);
-                     departmentInput.val('');
-                     departmentDnInput.val('');
-                     $('#referenceuser').empty().append(new Option("Bitte Abteilung wählen", ""));
-                     loadInitialSupervisors(); // Lade globale Liste neu
-                 }
+    function populateSupervisorDropdown(supervisors) {
+        const supervisorSelect = $('#supervisor');
+        const currentSupervisor = supervisorSelect.data('current-value'); // Wert beim Laden der Seite gespeichert
+        
+        supervisorSelect.empty().append('<option value="">--- Bitte wählen ---</option>');
+        if (supervisors && supervisors.length > 0) {
+            supervisors.forEach(supervisor => {
+                let supervisorValue = supervisor.username || supervisor.dn; 
+                let supervisorText = supervisor.displayName + (supervisor.username ? ` (${supervisor.username})` : (supervisor.mail ? ` (${supervisor.mail})` : ''));
+                
+                const option = $('<option>', { value: supervisorValue, text: supervisorText });
+                if (supervisorValue === currentSupervisor) {
+                    option.prop('selected', true);
+                }
+                supervisorSelect.append(option);
             });
+        } else { supervisorSelect.append('<option value="" disabled>Keine Vorgesetzten für Auswahl</option>');}
+    }
 
-            // Event Listener für Dockingstation Checkbox
-             $('input[name="hardware_computer"]').on('change', function() {
-                const isChecked = $('#needs_hardware').prop('checked');
-                 const dockingDiv = $('#dockingstationDiv');
-                 if (this.value === 'Laptop' && isChecked) {
-                     dockingDiv.show();
-                 } else {
-                     dockingDiv.hide();
-                     $('#Dockingstation').prop('checked', false);
-                 }
-             });
-             // Auch auf Änderung der "Hardware benötigt" Checkbox reagieren
-             $('#needs_hardware').on('change', function() {
-                  const needsHardware = $(this).prop('checked');
-                  const isLaptop = $('input[name="hardware_computer"][value="Laptop"]').is(':checked');
-                  const dockingDiv = $('#dockingstationDiv');
-                  if (needsHardware && isLaptop) {
-                       dockingDiv.show();
-                  } else {
-                       dockingDiv.hide();
-                       $('#Dockingstation').prop('checked', false);
-                  }
-             });
-
-             // Initialzustand der Felder beim Laden der Seite setzen
-             toggleWindowsUserFields();
-             toggleHardwareFields();
-              // Initialer Check für Dockingstation Sichtbarkeit
-             if ($('input[name="hardware_computer"][value="Laptop"]').is(':checked') && $('#needs_hardware').prop('checked')) {
-                 $('#dockingstationDiv').show();
-             } else {
-                 $('#dockingstationDiv').hide();
-             }
-
-
-             // Formular-Validierung beim Absenden
-             $('#onoffboarding-form').on('submit', function(event) {
-                  let isValid = true;
-                  const needsWindows = $('#needs_windows_user').prop('checked');
-
-                  // Pflichtfelder prüfen
-                  if ($('#lastname').val().trim() === '') {
-                       alert('Bitte geben Sie einen Nachnamen an.');
-                       $('#lastname').focus();
-                       isValid = false;
-                  }
-                  if (isValid && $('#firstname').val().trim() === '') {
-                        alert('Bitte geben Sie einen Vornamen an.');
-                       $('#firstname').focus();
-                       isValid = false;
-                  }
-                 // Pflichtfelder prüfen, wenn Windows-Konto benötigt wird
-                  if (isValid && needsWindows) {
-                        if ($('#department').val().trim() === '') {
-                            alert('Bitte wählen Sie eine Abteilung aus.');
-                             // Kein Fokus auf readonly Feld, evtl. Hinweis am Baum?
-                             isValid = false;
+    function fetchUsersForReference(ouDn) {
+        const referenceUserSelect = $('#referenceuser');
+        const currentRefUser = referenceUserSelect.data('current-value');
+        referenceUserSelect.empty().append(new Option("Lade Benutzer...", ""));
+        if (!ouDn) { 
+            referenceUserSelect.empty().append(new Option("Bitte Abteilung wählen", ""));
+            return;
+        }
+        const url = `{{ url_for('ou_users') }}?dn=${encodeURIComponent(ouDn)}`; // Jinja für URL
+        fetch(url)
+            .then(response => { if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); } return response.json(); })
+            .then(users => {
+                referenceUserSelect.empty().append(new Option("--- Bitte wählen (optional) ---", ""));
+                if (users && users.length > 0) {
+                    users.forEach(user => {
+                        let userValue = user.username; 
+                        let userText = user.displayName + (user.username ? ` (${user.username})` : '');
+                        const option = new Option(userText, userValue);
+                        if (userValue === currentRefUser) {
+                            option.selected = true;
                         }
-                        if (isValid && $('#supervisor').val() === '') {
-                            alert('Bitte wählen Sie einen Vorgesetzten aus.');
-                            $('#supervisor').focus();
-                            isValid = false;
-                       }
-                  }
-                 // Pflichtfelder prüfen, wenn Hardware benötigt wird
-                 const needsHardware = $('#needs_hardware').prop('checked');
-                  if (isValid && needsHardware) {
-                       if (!$('input[name="hardware_computer"]:checked').length) {
-                            alert('Bitte wählen Sie eine Computer-Option aus.');
-                            // Fokus schwierig bei Radios, evtl. Hinweis am Feld
-                           isValid = false;
-                       }
-                        if (isValid && !$('input[name="hardware_monitor"]:checked').length) {
-                            alert('Bitte wählen Sie eine Monitor-Option aus.');
-                            isValid = false;
-                       }
-                  }
+                        referenceUserSelect.append(option);
+                    });
+                } else { referenceUserSelect.append('<option value="" disabled>Keine Benutzer in dieser OU</option>'); }
+            })
+            .catch(error => { console.error("Fehler beim Laden der Referenzbenutzer:", error); referenceUserSelect.empty().append('<option value="">Fehler beim Laden</option>'); });
+    }
 
+    function fetchAndSetSupervisorsForOu(ouDn) {
+        const url = `{{ url_for('supervisors') }}?dn=${encodeURIComponent(ouDn)}`; // Jinja für URL
+         $('#supervisor').empty().append('<option value="" class="loading-placeholder">Lade Vorgesetzte...</option>');
+        fetch(url)
+            .then(response => { if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); } return response.json(); })
+            .then(supervisorList => { populateSupervisorDropdown(supervisorList); })
+            .catch(error => { console.error("Fehler beim Laden der Vorgesetzten für OU:", error); $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>'); });
+    }
 
-                  if (!isValid) {
-                       event.preventDefault(); // Verhindere das Absenden bei Fehlern
-                       console.log("Formular ungültig, Absenden verhindert.");
-                  } else {
-                       console.log("Formular gültig, wird abgeschickt.");
-                       // Optional: Deaktiviere Button um Doppelklicks zu verhindern
-                       $(this).find('button[type="submit"]').prop('disabled', true).text('Wird gesendet...');
-                  }
-             });
+    function loadInitialSupervisors() { 
+        const url = "{{ url_for('supervisors') }}"; // Jinja für URL
+        $('#supervisor').empty().append('<option value="" class="loading-placeholder">Lade Vorgesetzte...</option>');
+        fetch(url)
+            .then(response => { if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); } return response.json(); })
+            .then(supervisorList => { populateSupervisorDropdown(supervisorList); })
+            .catch(error => { console.error("Fehler beim initialen Laden aller Vorgesetzten:", error); $('#supervisor').empty().append('<option value="">Fehler beim Laden</option>'); });
+    }
+    
+    function handleWorkplaceSelectionChange(checkbox) {
+        const noNewEquipmentCheckbox = document.getElementById('workplace_no_new_equipment');
+        if (noNewEquipmentCheckbox && checkbox.checked) { 
+            noNewEquipmentCheckbox.checked = false;
+        }
+        updateNoNewEquipmentState();
+    }
+    function handleNoNewEquipmentChange(checkbox) {
+        const tableCheckbox = document.getElementById('workplace_needs_new_table');
+        const chairCheckbox = document.getElementById('workplace_needs_new_chair');
+        const armsCheckbox = document.getElementById('workplace_needs_monitor_arms');
+        if (checkbox.checked) {
+            if(tableCheckbox) tableCheckbox.checked = false;
+            if(chairCheckbox) chairCheckbox.checked = false;
+            if(armsCheckbox) armsCheckbox.checked = false;
+        }
+        updateNoNewEquipmentState();
+    }
+    function updateNoNewEquipmentState() {
+        const tableCheckbox = document.getElementById('workplace_needs_new_table');
+        const chairCheckbox = document.getElementById('workplace_needs_new_chair');
+        const armsCheckbox = document.getElementById('workplace_needs_monitor_arms');
+        const noNewEquipmentCheckbox = document.getElementById('workplace_no_new_equipment');
 
+        if (!tableCheckbox || !chairCheckbox || !armsCheckbox || !noNewEquipmentCheckbox) return;
+
+        const anySpecificChecked = tableCheckbox.checked || chairCheckbox.checked || armsCheckbox.checked;
+
+        tableCheckbox.disabled = noNewEquipmentCheckbox.checked;
+        chairCheckbox.disabled = noNewEquipmentCheckbox.checked;
+        armsCheckbox.disabled = noNewEquipmentCheckbox.checked;
+        
+        noNewEquipmentCheckbox.disabled = anySpecificChecked;
+    }
+
+    $(document).ready(function () {
+        // Initialisierung der Werte für current-value data Attribute, um Werte bei Fehlern neu zu laden
+        $('#supervisor').data('current-value', "{{ form_data.get('supervisor', '') }}");
+        $('#referenceuser').data('current-value', "{{ form_data.get('referenceuser', '') }}");
+        
+        toggleWindowsUserFields(); 
+        toggleHardwareFields();
+        toggleCipkomRefUserField();
+        updateNoNewEquipmentState(); 
+
+        $('#ou-tree').on("select_node.jstree", function (e, data) {
+            const selectedNode = data.node;
+            const dn = selectedNode.data?.dn; 
+            let namePathArray = [];
+            data.node.parents.forEach(function(parent_id) {
+                if (parent_id !== "#") { 
+                    namePathArray.unshift($('#ou-tree').jstree(true).get_node(parent_id).text);
+                }
+            });
+            namePathArray.push(selectedNode.text);
+            const displayPath = namePathArray.join(' / ');
+
+            if (dn) {
+                $('#department').val(displayPath); 
+                $('#department_dn').val(dn);
+                fetchUsersForReference(dn);
+                fetchAndSetSupervisorsForOu(dn); 
+            } else { 
+                $('#department').val('');
+                $('#department_dn').val('');
+                $('#referenceuser').empty().append(new Option("Bitte Abteilung wählen", ""));
+                loadInitialSupervisors(); 
+            }
         });
-    </script>
+        
+        $('input[name="hardware_computer"]').on('change', function() {
+            const needsHardware = $('#needs_hardware').prop('checked');
+            const dockingDiv = $('#dockingstationDiv');
+            if (this.value === 'Laptop' && needsHardware) { 
+                dockingDiv.show();
+            } else { 
+                dockingDiv.hide(); 
+                $('#Dockingstation').prop('checked', false); 
+            }
+        });
+        $('#needs_hardware').on('change', function() { 
+            const needsHardware = $(this).prop('checked');
+            const isLaptop = $('input[name="hardware_computer"][value="Laptop"]').is(':checked');
+            const dockingDiv = $('#dockingstationDiv');
+            if (needsHardware && isLaptop) { 
+                dockingDiv.show(); 
+            } else { 
+                dockingDiv.hide(); 
+                $('#Dockingstation').prop('checked', false); 
+            }
+        });
+        
+        // Sicherstellen, dass der initiale Zustand der Dockingstation-Checkbox korrekt ist
+        if ($('#needs_hardware').prop('checked') && $('input[name="hardware_computer"][value="Laptop"]').is(':checked')) {
+            $('#dockingstationDiv').show();
+        } else {
+            $('#dockingstationDiv').hide();
+        }
+
+        $('#onoffboarding-form').on('submit', function(event) {
+            let isValid = true;
+            const submitButton = $(this).find('button[type="submit"]');
+            // Deaktivieren erst nach Validierung, damit User korrigieren kann
+
+            const needsWindows = $('#needs_windows_user').prop('checked');
+            if ($('#lastname').val().trim() === '') {
+                alert('Bitte geben Sie einen Nachnamen an.'); $('#lastname').focus(); isValid = false;
+            }
+            if (isValid && $('#firstname').val().trim() === '') {
+                alert('Bitte geben Sie einen Vornamen an.'); $('#firstname').focus(); isValid = false;
+            }
+            
+            if (isValid && needsWindows) {
+                if ($('#department_dn').val().trim() === '') { 
+                    alert('Bitte wählen Sie eine Abteilung aus dem Baum aus.'); isValid = false;
+                }
+                if (isValid && $('#supervisor').val() === '') {
+                    alert('Bitte wählen Sie einen Vorgesetzten aus.'); $('#supervisor').focus(); isValid = false;
+                }
+            }
+            const needsHardware = $('#needs_hardware').prop('checked');
+            if (isValid && needsHardware) {
+                if (!$('input[name="hardware_computer"]:checked').length) {
+                    alert('Bitte wählen Sie eine Computer-Option aus.'); isValid = false;
+                }
+                if (isValid && !$('input[name="hardware_monitor"]:checked').length) {
+                    alert('Bitte wählen Sie eine Monitor-Option aus.'); isValid = false;
+                }
+            }
+            if (!isValid) {
+                event.preventDefault(); 
+            } else {
+                 submitButton.prop('disabled', true).text('Wird gesendet...');
+            }
+        });
+    });
+</script>
 </body>
 </html>

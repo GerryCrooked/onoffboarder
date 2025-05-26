@@ -4,19 +4,25 @@
     <meta charset="UTF-8">
     <title>Login - On-/Offboarding</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { display: flex; align-items: center; justify-content: center; min-height: 100vh; background-color: #f8f9fa; padding-top: 0; } /* body padding entfernt, da zentriert */
+        .login-container { max-width: 400px; width: 100%; padding: 2rem; background-color: #fff; border-radius: 0.5rem; box-shadow: 0 0.5rem 1rem rgba(0,0,0,.15); }
+        .login-container h2 { margin-bottom: 1.5rem; text-align: center; }
+    </style>
 </head>
-<body class="p-4">
-    <div class="container">
-        <h2>Login</h2>
+<body>
+    <div class="login-container">
+        <h2>Login On-/Offboarding</h2>
 
-        {% with messages = get_flashed_messages() %}
-          {% if messages %}
-            <div class="alert alert-warning mt-3">
-              {% for message in messages %}
-                <div>{{ message }}</div>
-              {% endfor %}
-            </div>
-          {% endif %}
+        {% with messages = get_flashed_messages(with_categories=true) %} {# with_categories=true hinzugefügt für konsistente Flash-Nachrichten #}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'message' else 'danger' }} alert-dismissible fade show" role="alert"> {# Default auf danger für Login-Fehler #}
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
         {% endwith %}
 
         <form method="POST">
@@ -28,8 +34,9 @@
                 <label for="password" class="form-label">Passwort</label>
                 <input type="password" class="form-control" id="password" name="password" required>
             </div>
-            <button type="submit" class="btn btn-primary">Anmelden</button>
+            <button type="submit" class="btn btn-primary w-100">Anmelden</button>
         </form>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

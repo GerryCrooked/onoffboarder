@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Bauamt Status - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; }
+        .status-block { margin-bottom: 15px; padding: 15px; border: 1px solid #dee2e6; border-radius: .375rem; }
+        .status-done { background-color: #d1e7dd; border-color: #badbcc; }
+        .status-done p, .status-done h5 { color: #0f5132; }
+        .navbar { margin-bottom: 1rem; } /* Konsistenter Abstand */
+        .emoji-icon { margin-right: 0.5em; }
+        .sub-section { margin-top: 1rem; padding-top: 0.5rem; border-top: 1px dashed #eee; }
+    </style>
+</head>
+<body class="pt-4">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavBauamtStatus">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavBauamtStatus">
+            <ul class="navbar-nav me-auto">
+                {% if session.is_admin %} {# ENV_ADMIN_MAIN_GROUP #}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request_item else None) }}">Login</a></li>
+                {% endif %}
+                {% if request_item and session.is_admin %} {# Nur Admins können direkt zur Antragsansicht #}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('view_request', request_id=request_item.id) }}">Zurück zur Antragsansicht</a></li>
+                {% elif request_item and session.user %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Zum Dashboard</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% if request_item %}
+    <h1>Bauamt Status für Antrag ID: {{ request_item.id }}</h1>
+    <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
+    <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p>
+    <hr>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <h3 class="mt-4">Status-Updates Bauamt</h3>
+
+    <div class="status-block {% if request_item.room_number %}status-done{% endif %}">
+        <h5><span class="emoji-icon">🚪</span> Zimmernummer</h5>
+        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}">
+            <input type="hidden" name="action" value="update_room_number">
+            <div class="row">
+                <div class="col-md-8">
+                    <input type="text" class="form-control" id="room_number" name="room_number"
+                           value="{{ request_item.room_number or '' }}" placeholder="Zimmernummer eintragen/ändern">
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-info w-100">Zimmernummer speichern</button>
+                </div>
+            </div>
+        </form>
+        {% if request_item.room_number %}
+            <p class="mt-2 text-success">Aktuell erfasste Zimmernummer: <strong>{{ request_item.room_number }}</strong></p>
+        {% else %}
+            <p class="mt-2 text-muted"><em>Noch keine Zimmernummer erfasst.</em></p>
+        {% endif %}
+    </div>
+
+    {% if request_item.key_required %}
+    <div class="status-block sub-section">
+        <h5><span class="emoji-icon">🔑</span> Schlüsselverwaltung</h5>
+        <div class="task-item {% if request_item.key_status_prepared_at %}status-done{% endif %} mb-3"> {# task-item hinzugefügt #}
+            <h6>Schritt 1: Vorbereitung</h6>
+            {% if not request_item.key_status_prepared_at %}
+                <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="key_prepared">
+                    <button type="submit" class="btn btn-primary btn-sm">Schlüssel für User vorbereitet</button> {# btn-sm hinzugefügt #}
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Schlüssel vorbereitet am: {# mb-0 für kompaktere Ansicht #}
+                    {{ request_item.key_status_prepared_at | format_datetime }}
+                    durch: {{ request_item.key_status_prepared_by }}
+                </p>
+            {% endif %}
+        </div>
+
+        {% if request_item.key_status_prepared_at %}
+        <div class="task-item {% if request_item.key_status_issued_at %}status-done{% endif %}"> {# task-item hinzugefügt #}
+            <h6>Schritt 2: Ausgabe an Mitarbeiter</h6>
+            {% if not request_item.key_status_issued_at %}
+                {% if show_key_issue_button %} {# Diese Variable kommt von app.py #}
+                    <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" enctype="multipart/form-data">
+                        <input type="hidden" name="action" value="key_issued">
+                        <div class="mb-3">
+                            <label for="protocol_pdf" class="form-label">Übergabeprotokoll (PDF):</label>
+                            <input class="form-control form-control-sm" type="file" id="protocol_pdf" name="protocol_pdf" accept=".pdf" required> {# form-control-sm #}
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm">Schlüssel an {{ request_item.firstname }} {{ request_item.lastname }} ausgegeben & Protokoll hochladen</button>
+                    </form>
+                {% else %}
+                    <p class="text-muted"><em>Der Button zur Bestätigung der Schlüsselausgabe wird aktiv, sobald das Startdatum ({{ request_item.startdate | format_datetime('%d.%m.%Y') }}) erreicht oder überschritten ist.</em></p>
+                    <button type="button" class="btn btn-secondary btn-sm" disabled>Schlüssel ausgeben & Protokoll hochladen</button>
+                {% endif %}
+            {% else %}
+                <p class="text-success mb-0">✔️ Schlüssel ausgegeben am:
+                    {{ request_item.key_status_issued_at | format_datetime }}
+                    durch: {{ request_item.key_status_issued_by }}.
+                </p>
+                {% if request_item.key_issuance_protocol_filename %}
+                    <p class="mt-1"><a href="{{ url_for('uploaded_file', filename=request_item.key_issuance_protocol_filename) }}" target="_blank" class="btn btn-outline-secondary btn-sm">Übergabeprotokoll herunterladen</a></p>
+                {% endif %}
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% elif request_item.key_required is none or not request_item.key_required %}
+        <div class="status-block sub-section">
+             <h5><span class="emoji-icon">🔑</span> Schlüsselverwaltung</h5>
+            <p class="text-muted"><em>Für diesen Antrag wurde kein Schlüssel angefordert.</em></p>
+        </div>
+    {% endif %}
+
+
+    <div class="status-block sub-section">
+        <h5><span class="emoji-icon">🪑</span> Arbeitsplatzausstattung</h5>
+        {% if not request_item.workplace_needs_new_table and not request_item.workplace_needs_new_chair and not request_item.workplace_needs_monitor_arms and not request_item.workplace_no_new_equipment %}
+        {# Phase 1: Auswahl der benötigten Ausstattung #}
+        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}">
+            <input type="hidden" name="action" value="save_workplace_selection">
+            <p>Bitte wählen Sie die benötigte Ausstattung aus (Auswahl wird gespeichert):</p>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="true" id="workplace_needs_new_table" name="workplace_needs_new_table" onchange="handleEquipmentChange()">
+                <label class="form-check-label" for="workplace_needs_new_table">Neuer Tisch notwendig</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="true" id="workplace_needs_new_chair" name="workplace_needs_new_chair" onchange="handleEquipmentChange()">
+                <label class="form-check-label" for="workplace_needs_new_chair">Neuer Stuhl notwendig</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" value="true" id="workplace_needs_monitor_arms" name="workplace_needs_monitor_arms" onchange="handleEquipmentChange()">
+                <label class="form-check-label" for="workplace_needs_monitor_arms">Monitorarme notwendig</label>
+                {% if request_item.hardware_monitor and request_item.hardware_monitor.lower() not in ['monitor(e) bereits vorhanden', ''] %}
+                    <small class="text-muted d-block ps-4"> (Info: {{ request_item.hardware_monitor }} laut Hardware-Anforderung im Antrag)</small>
+                {% elif request_item.hardware_monitor %}
+                     <small class="text-muted d-block ps-4"> (Info: {{ request_item.hardware_monitor }})</small>
+                {% else %}
+                     <small class="text-muted d-block ps-4"> (Info: Keine spezifische Monitoranzahl im Antrag vermerkt)</small>
+                {% endif %}
+            </div>
+            <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" value="true" id="workplace_no_new_equipment" name="workplace_no_new_equipment" onchange="handleNoEquipmentChange()">
+                <label class="form-check-label" for="workplace_no_new_equipment">Keine neue Arbeitsplatzausstattung notwendig</label>
+            </div>
+            <button type="submit" class="btn btn-info mt-3 btn-sm">Auswahl für Ausstattung speichern</button>
+        </form>
+        {% else %}
+            {# Phase 2: Status-Updates für die ausgewählten Items #}
+            {% if request_item.workplace_no_new_equipment %}
+                <p class="text-muted"><em>Keine neue Arbeitsplatzausstattung laut Auswahl benötigt.</em></p>
+            {% else %}
+                {% if request_item.workplace_needs_new_table %}
+                <div class="task-item {% if request_item.workplace_table_setup_at %}status-done{% elif request_item.workplace_table_ordered_at %}status-pending{% endif %} mt-2">
+                    <h6>Neuer Tisch</h6>
+                    {% if not request_item.workplace_table_ordered_at %}
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_table_ordered">
+                            <button type="submit" class="btn btn-primary btn-sm">Tisch als bestellt markieren</button>
+                        </form>
+                    {% elif not request_item.workplace_table_setup_at %}
+                        <p class="text-info mb-1">✔️ Tisch bestellt am {{ request_item.workplace_table_ordered_at | format_datetime }} ({{request_item.workplace_table_ordered_by}})</p>
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_table_setup">
+                            <button type="submit" class="btn btn-primary btn-sm">Tisch als aufgebaut markieren</button>
+                        </form>
+                    {% else %}
+                        <p class="text-success mb-0">✔️ Tisch aufgebaut am {{ request_item.workplace_table_setup_at | format_datetime }} ({{request_item.workplace_table_setup_by}})</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if request_item.workplace_needs_new_chair %}
+                <div class="task-item {% if request_item.workplace_chair_setup_at %}status-done{% elif request_item.workplace_chair_ordered_at %}status-pending{% endif %} mt-2">
+                    <h6>Neuer Stuhl</h6>
+                    {% if not request_item.workplace_chair_ordered_at %}
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_chair_ordered">
+                            <button type="submit" class="btn btn-primary btn-sm">Stuhl als bestellt markieren</button>
+                        </form>
+                    {% elif not request_item.workplace_chair_setup_at %}
+                        <p class="text-info mb-1">✔️ Stuhl bestellt am {{ request_item.workplace_chair_ordered_at | format_datetime }} ({{request_item.workplace_chair_ordered_by}})</p>
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_chair_setup">
+                            <button type="submit" class="btn btn-primary btn-sm">Stuhl als aufgebaut markieren</button>
+                        </form>
+                    {% else %}
+                         <p class="text-success mb-0">✔️ Stuhl aufgebaut am {{ request_item.workplace_chair_setup_at | format_datetime }} ({{request_item.workplace_chair_setup_by}})</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if request_item.workplace_needs_monitor_arms %}
+                <div class="task-item {% if request_item.workplace_monitor_arms_setup_at %}status-done{% elif request_item.workplace_monitor_arms_ordered_at %}status-pending{% endif %} mt-2">
+                    <h6>Monitorarme
+                        {% if request_item.hardware_monitor and request_item.hardware_monitor.lower() not in ['monitor(e) bereits vorhanden', ''] %}
+                            <small class="text-muted"> (für {{ request_item.hardware_monitor }})</small>
+                        {% elif request_item.hardware_monitor %}
+                            <small class="text-muted"> (Monitoranzahl: {{ request_item.hardware_monitor }})</small>
+                        {% endif %}
+                    </h6>
+                    {% if not request_item.workplace_monitor_arms_ordered_at %}
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_monitor_arms_ordered">
+                            <button type="submit" class="btn btn-primary btn-sm">Monitorarme als bestellt markieren</button>
+                        </form>
+                    {% elif not request_item.workplace_monitor_arms_setup_at %}
+                        <p class="text-info mb-1">✔️ Monitorarme bestellt am {{ request_item.workplace_monitor_arms_ordered_at | format_datetime }} ({{request_item.workplace_monitor_arms_ordered_by}})</p>
+                        <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
+                            <input type="hidden" name="action" value="workplace_monitor_arms_setup">
+                            <button type="submit" class="btn btn-primary btn-sm">Monitorarme als montiert markieren</button>
+                        </form>
+                    {% else %}
+                        <p class="text-success mb-0">✔️ Monitorarme montiert am {{ request_item.workplace_monitor_arms_setup_at | format_datetime }} ({{request_item.workplace_monitor_arms_setup_by}})</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+            {% endif %} {# Ende if request_item.workplace_no_new_equipment else #}
+            {# Button zum Ändern der Auswahl nur anzeigen, wenn nicht im initialen Auswahlmodus #}
+            <p class="mt-3"><a href="{{ url_for('update_bauamt_status', request_id=request_item.id, reset_workplace_selection='true') }}" class="btn btn-sm btn-outline-warning">Auswahl für Ausstattung ändern/zurücksetzen</a></p>
+        {% endif %} {# Ende if not (alle Flags für Ausstattungsauswahl sind False) #}
+    </div>
+
+    <div class="mt-4 mb-5">
+        {% if session.is_admin %}
+            <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
+        {% elif session.user %}
+            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zum Dashboard</a>
+        {% endif %}
+    </div>
+    {% else %}
+        <div class="alert alert-warning mt-3">Antrag nicht gefunden oder konnte nicht geladen werden.</div>
+        <a href="{{ url_for('admin') }}" class="btn btn-secondary mt-3">Zurück zum Admin-Dashboard</a>
+    {% endif %}
+</div>
+<script>
+    // JavaScript für Arbeitsplatzausstattung (unverändert, ggf. kleine Anpassungen nötig)
+    let workplaceNeedsTableCheckbox, workplaceNeedsChairCheckbox, workplaceNeedsMonitorArmsCheckbox, workplaceNoNewEquipmentCheckbox;
+    document.addEventListener('DOMContentLoaded', function() {
+        workplaceNeedsTableCheckbox = document.getElementById('workplace_needs_new_table');
+        workplaceNeedsChairCheckbox = document.getElementById('workplace_needs_new_chair');
+        workplaceNeedsMonitorArmsCheckbox = document.getElementById('workplace_needs_monitor_arms');
+        workplaceNoNewEquipmentCheckbox = document.getElementById('workplace_no_new_equipment');
+
+        if (workplaceNeedsTableCheckbox) workplaceNeedsTableCheckbox.addEventListener('change', function() { handleEquipmentChange(this); });
+        if (workplaceNeedsChairCheckbox) workplaceNeedsChairCheckbox.addEventListener('change', function() { handleEquipmentChange(this); });
+        if (workplaceNeedsMonitorArmsCheckbox) workplaceNeedsMonitorArmsCheckbox.addEventListener('change', function() { handleEquipmentChange(this); });
+        if (workplaceNoNewEquipmentCheckbox) workplaceNoNewEquipmentCheckbox.addEventListener('change', function() { handleNoEquipmentChange(this); });
+        
+        // Initialen Zustand der Checkboxen setzen
+        if (workplaceNoNewEquipmentCheckbox) { // Nur ausführen, wenn das Formular im Auswahlmodus ist
+             handleNoEquipmentChange(); // Um sicherzustellen, dass die anderen deaktiviert sind, wenn "keine" aktiv ist
+             handleEquipmentChange();   // Um sicherzustellen, dass "keine" deaktiviert ist, wenn andere aktiv sind
+        }
+    });
+
+    function handleEquipmentChange(changedCheckbox) {
+        if (!workplaceNoNewEquipmentCheckbox) return; // Nur im Auswahlmodus relevant
+        if (workplaceNeedsTableCheckbox.checked || workplaceNeedsChairCheckbox.checked || workplaceNeedsMonitorArmsCheckbox.checked) {
+            workplaceNoNewEquipmentCheckbox.checked = false;
+            workplaceNoNewEquipmentCheckbox.disabled = true;
+        } else {
+            workplaceNoNewEquipmentCheckbox.disabled = false;
+        }
+    }
+
+    function handleNoEquipmentChange() {
+        if (!workplaceNoNewEquipmentCheckbox) return; // Nur im Auswahlmodus relevant
+        const disableOthers = workplaceNoNewEquipmentCheckbox.checked;
+        if(workplaceNeedsTableCheckbox) { workplaceNeedsTableCheckbox.checked = false; workplaceNeedsTableCheckbox.disabled = disableOthers; }
+        if(workplaceNeedsChairCheckbox) { workplaceNeedsChairCheckbox.checked = false; workplaceNeedsChairCheckbox.disabled = disableOthers; }
+        if(workplaceNeedsMonitorArmsCheckbox) { workplaceNeedsMonitorArmsCheckbox.checked = false; workplaceNeedsMonitorArmsCheckbox.disabled = disableOthers; }
+    }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

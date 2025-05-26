@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>HR & AIDA Status aktualisieren - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; }
+        .status-section { margin-bottom: 2rem; }
+        .status-block { margin-bottom: 1rem; padding: 1rem; border: 1px solid #dee2e6; border-radius: .375rem; }
+        .task-item { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; }
+        .task-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0;}
+        .status-done { background-color: #d1e7dd; border-color: #badbcc; }
+        .status-done p, .status-done h6 { color: #0f5132; }
+        .navbar { margin-bottom: 1rem; } /* Geändert von 0 !important für etwas Abstand */
+        .emoji-icon { margin-right: 0.5em; }
+    </style>
+</head>
+<body class="pt-4">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+    <div class="container-fluid">
+        {# Navbar-Brand Link: Führt Admins zum Formular, andere (eingeloggte) User zur Admin-Übersicht (wo ihre spezifischen Rechte greifen) #}
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavHrAidaStatus">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavHrAidaStatus">
+            <ul class="navbar-nav me-auto">
+                {# Links nur für Admins (Mitglieder von ADMIN_MAIN_GROUP) anzeigen #}
+                {% if session.is_admin %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% endif %}
+                {# Hier könnten weitere Nav-Links für alle User der MAIN_ACCESS_GROUP stehen, falls es eine generelle Seite gibt #}
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request_item else None) }}">Login</a></li>
+                {% endif %}
+                {# Der "Zurück zur Antragsansicht"-Link wird nur angezeigt, wenn der User Admin ist, da die view-Seite Admin-geschützt ist #}
+                {% if request_item and session.is_admin %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('view_request', request_id=request_item.id) }}">Zurück zur Antragsansicht</a></li>
+                {% elif request_item and session.user %} 
+                {# Fallback für HR-Nutzer, die keine Admins sind: Link zum Admin-Dashboard, wo ihre Berechtigungen dann greifen #}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Zum Dashboard</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% if request_item %} {# Hauptinhalt nur anzeigen, wenn request_item vorhanden ist #}
+    <h1>HR &amp; AIDA Status für Antrag ID: {{ request_item.id }}</h1>
+    <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
+    <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p>
+    <hr>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {# HR Aufgaben sind typischerweise für Onboarding relevant.
+       Die Logik `{% if request_item.process_type == 'onboarding' %}` könnte hier um den ganzen Block
+       oder um die einzelnen HR-Aufgaben gelegt werden, wenn diese nur bei Onboarding erscheinen sollen.
+       Da diese Seite explizit "HR & AIDA Status" heißt, werden die Blöcke erstmal immer angezeigt,
+       wenn die Seite geladen wird (der Zugriff auf die Seite selbst wird ja durch @require_ad_group gesteuert).
+    #}
+    <div class="status-section">
+        <h3 class="mt-4"><span class="emoji-icon">📋</span> Status-Updates Personalabteilung (Onboarding-spezifisch)</h3>
+
+        {# Dienstvereinbarung #}
+        <div class="status-block task-item {% if request_item.hr_dienstvereinbarung_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">📜</span> Dienstvereinbarung herausgegeben</h6>
+            {% if not request_item.hr_dienstvereinbarung_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="dienstvereinbarung_issued">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_dienstvereinbarung_at | format_datetime }} durch: {{ request_item.hr_dienstvereinbarung_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Datenschutzblatt #}
+        <div class="status-block task-item {% if request_item.hr_datenschutz_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">🛡️</span> Datenschutzblatt herausgegeben</h6>
+            {% if not request_item.hr_datenschutz_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="datenschutz_issued">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_datenschutz_at | format_datetime }} durch: {{ request_item.hr_datenschutz_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Über DSGVO informiert #}
+        <div class="status-block task-item {% if request_item.hr_dsgvo_informed_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">⚖️</span> Über DSGVO informiert</h6>
+            {% if not request_item.hr_dsgvo_informed_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="dsgvo_informed">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_dsgvo_informed_at | format_datetime }} durch: {{ request_item.hr_dsgvo_informed_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Dienstanweisung IT herausgegeben #}
+        <div class="status-block task-item {% if request_item.hr_it_directive_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">💻</span> Dienstanweisung IT herausgegeben</h6>
+            {% if not request_item.hr_it_directive_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="it_directive_issued">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_it_directive_at | format_datetime }} durch: {{ request_item.hr_it_directive_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Personaldatenblatt für Abrechnung erstellt #}
+        <div class="status-block task-item {% if request_item.hr_payroll_sheet_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">💶</span> Personaldatenblatt für Abrechnung erstellt</h6>
+            {% if not request_item.hr_payroll_sheet_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="payroll_sheet_created">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_payroll_sheet_at | format_datetime }} durch: {{ request_item.hr_payroll_sheet_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Leitlinien Informationssicherheit herausgegeben #}
+        <div class="status-block task-item {% if request_item.hr_security_guidelines_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">🛡️</span> Leitlinien Informationssicherheit herausgegeben</h6>
+            {% if not request_item.hr_security_guidelines_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="security_guidelines_issued">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.hr_security_guidelines_at | format_datetime }} durch: {{ request_item.hr_security_guidelines_by }}</p>
+            {% endif %}
+        </div>
+    </div> 
+
+    <div class="status-section">
+        <h3 class="mt-4"><span class="emoji-icon">🗂️</span> AIDA Verwaltung</h3>
+        {# AIDA-Zugang erstellt #}
+        <div class="status-block task-item {% if request_item.aida_access_created_at %}status-done{% endif %}">
+            <h6>AIDA-Zugang erstellt</h6>
+            {% if not request_item.aida_access_created_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="aida_access_created">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.aida_access_created_at | format_datetime }} durch: {{ request_item.aida_access_created_by }}</p>
+            {% endif %}
+        </div>
+
+        {# Schlüssel in AIDA aufgenommen #}
+        <div class="status-block task-item {% if request_item.aida_key_registered_at %}status-done{% endif %}">
+            <h6>Schlüssel in AIDA aufgenommen</h6>
+            {% if not request_item.aida_key_registered_at %}
+                <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="aida_key_registered">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Erledigt am: {{ request_item.aida_key_registered_at | format_datetime }} durch: {{ request_item.aida_key_registered_by }}</p>
+            {% endif %}
+        </div>
+    </div> 
+    
+    <div class="mt-4 mb-5">
+        {% if session.is_admin %} {# ADMIN_MAIN_GROUP #}
+            <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
+        {% elif session.user %} {# Fallback für HR User ohne Admin-Rechte #}
+             <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zurück zum Dashboard</a>
+        {% endif %}
+    </div>
+    {% else %}
+        <div class="alert alert-warning mt-3">Antrag nicht gefunden oder konnte nicht geladen werden.</div>
+        <a href="{{ url_for('admin') }}" class="btn btn-secondary mt-3">Zurück zum Admin-Dashboard</a>
+    {% endif %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -2,78 +2,346 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <title>Antragsdetails</title>
+    <title>Antragsdetails - ID: {{ request.id }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/print.css') }}" media="print">
     <style>
-        .status-box {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin-bottom: 20px;
+        body { padding-top: 70px; }
+        .card { margin-bottom: 20px; }
+        .card-header {
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        .status-header {
-            font-weight: 600;
-            margin-bottom: 10px;
-            color: #0d6efd;
-        }
-        .status-content {
-            white-space: pre-wrap;
-        }
+        /* Bootstrap's dl.row, dt.col-sm-X, dd.col-sm-X sollten das Layout hier steuern */
+        /* dt { font-weight: bold; } */ /* Wird durch Bootstrap-Klassen oder dl.row gesteuert */
+        /* dd { margin-left: 0; padding-left: 1.5em; } */ /* Wird durch Bootstrap-Klassen gesteuert */
+        .emoji-icon { margin-right: 0.5em; }
+        .navbar { margin-bottom: 1rem !important; } /* Abstand nach Navbar */
+        .badge.bg-success { min-width: 120px; text-align: center;}
+        .sub-block-header { font-size: 1rem; margin-top: 0.75rem; margin-bottom: 0.25rem; color: #495057; }
+        .action-button-group a.btn, .action-button-group form button { margin-bottom: 0.5rem; }
     </style>
 </head>
-<body class="bg-light p-4">
-    <div class="container">
-        <h1 class="mb-4">Antragsdetails</h1>
+<body class="pt-4"> {# Padding-top für fixed navbar angepasst #}
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavView">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNavView">
+                <ul class="navbar-nav me-auto">
+                    {% if session.is_admin %} {# ENV_ADMIN_MAIN_GROUP #}
+                        <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                        <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                        <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                    {% endif %}
+                </ul>
+                <ul class="navbar-nav">
+                    {% if session.user %}
+                    <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                    {% else %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request else None) }}">Login</a></li>
+                    {% endif %}
+                </ul>
+            </div>
+        </div>
+    </nav>
 
-        {% if request %}
-            <div class="card shadow-sm mb-4">
-                <div class="card-header bg-primary text-white">
-                    Antrag ID: {{ request[0] }}
+    <div class="container" style="padding-top: 20px;">
+        <h1>Antragsdetails für ID: {{ request.id }}</h1>
+        <p>Aktueller Gesamtstatus: <span class="badge
+            {% if request.status == 'offen' %}bg-warning text-dark
+            {% elif request.status == 'in_bearbeitung' %}bg-info text-dark
+            {% elif request.status == 'genehmigt' %}bg-primary
+            {% elif request.status == 'abgeschlossen' %}bg-success
+            {% elif request.status == 'abgelehnt' %}bg-danger
+            {% elif request.status and 'fehler' in request.status %}bg-danger
+            {% else %}bg-secondary
+            {% endif %}">{{ request.status | replace('_', ' ') | capitalize }}</span>
+        </p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="row">
+            <div class="col-md-6">
+                {# Antragssteller-Informationen #}
+                <div class="card">
+                    <div class="card-header"><span class="emoji-icon">📄</span> Antragssteller-Informationen</div>
+                    <div class="card-body">
+                        <dl class="row">
+                            <dt class="col-sm-5">Prozesstyp:</dt><dd class="col-sm-7">{{ request.process_type | capitalize }}</dd>
+                            <dt class="col-sm-5">Nachname:</dt><dd class="col-sm-7">{{ request.lastname }}</dd>
+                            <dt class="col-sm-5">Vorname:</dt><dd class="col-sm-7">{{ request.firstname }}</dd>
+                            <dt class="col-sm-5">Geburtsdatum:</dt><dd class="col-sm-7">{{ request.birthdate | format_datetime('%d.%m.%Y') if request.birthdate else 'N/A' }}</dd>
+                            <dt class="col-sm-5">Stellenbezeichnung:</dt><dd class="col-sm-7">{{ request.job_title or 'N/A' }}</dd>
+                            {% if request.process_type == 'onboarding' and request.startdate %}<dt class="col-sm-5">Startdatum:</dt><dd class="col-sm-7">{{ request.startdate | format_datetime('%d.%m.%Y') if request.startdate else 'N/A' }}</dd>{% endif %}
+                            {% if request.process_type == 'offboarding' and request.enddate %}<dt class="col-sm-5">Austrittsdatum:</dt><dd class="col-sm-7">{{ request.enddate | format_datetime('%d.%m.%Y') if request.enddate else 'N/A' }}</dd>{% endif %}
+                        </dl>
+                    </div>
                 </div>
-                <div class="card-body">
-                    <dl class="row">
-                        <!-- Vorhandene Felder bleiben gleich -->
-                        
-                        <!-- Neue Statusfelder -->
-                        <div class="col-12 mb-4 status-box">
-                            <div class="status-header">📝 Account-Information</div>
-                            <div class="status-content">{{ request[14] or "Wird bearbeitet..." }}</div>
-                        </div>
 
-                        <div class="col-12 mb-4 status-box">
-                            <div class="status-header">💻 Hardware-Status</div>
-                            <div class="status-content">{{ request[15] or "Wird bearbeitet..." }}</div>
-                        </div>
+                {# Antragsübersicht (Bedarfe) #}
+                <div class="card">
+                    <div class="card-header"><span class="emoji-icon">🖥️</span> Antragsübersicht (Bedarfe)</div>
+                    <div class="card-body">
+                        <dl class="row">
+                            <dt class="col-sm-5">Windows Konto benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.required_windows else 'Nein' }}</dd>
+                            {% if request.required_windows %}
+                                <dt class="col-sm-5 ps-4">↳ Abteilung:</dt><dd class="col-sm-7">{{ request.department or 'N/A' }}{% if request.department_dn %} ({{ request.department_dn }}){% endif %}</dd>
+                                <dt class="col-sm-5 ps-4">↳ Vorgesetzter:</dt><dd class="col-sm-7">{{ request.supervisor or 'N/A' }}</dd>
+                                {% if request.referenceuser %}<dt class="col-sm-5 ps-4">↳ Referenzbenutzer (AD):</dt><dd class="col-sm-7">{{ request.referenceuser }}</dd>{% endif %}
+                            {% endif %}
+                            <dt class="col-sm-5">E-Mail Account benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.email_account_required else 'Nein' }}</dd>
+                            <hr class="my-1 col-12"><dt class="col-sm-5">Hardware benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.hardware_required else 'Nein' }}</dd>
+                            <dt class="col-sm-5">Festarbeitsplatztelefon:</dt><dd class="col-sm-7">{{ 'Ja' if request.needs_fixed_phone else 'Nein' }}</dd>
+                            <dt class="col-sm-5">Schlüssel benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.key_required else 'Nein' }}</dd>
+                            <dt class="col-sm-5">Zimmernummer (Antrag):</dt><dd class="col-sm-7">{{ request.room_number or 'N/A' }}</dd>
+                            <dt class="col-sm-5">Arbeitsplatzausstattung:</dt>
+                            <dd class="col-sm-7">
+                            {% if request.workplace_no_new_equipment %}Keine neue benötigt
+                            {% else %}{% if request.workplace_needs_new_table %}<span>- Neuer Tisch</span><br>{% endif %}{% if request.workplace_needs_new_chair %}<span>- Neuer Stuhl</span><br>{% endif %}{% if request.workplace_needs_monitor_arms %}<span>- Monitorarme</span><br>{% endif %}{% if not request.workplace_needs_new_table and not request.workplace_needs_new_chair and not request.workplace_needs_monitor_arms %}<span>Keine spezifische neue Ausstattung angefordert</span>{% endif %}
+                            {% endif %}
+                            </dd>
+                            <hr class="my-1 col-12"><dt class="col-sm-5">RIS Zugang benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.needs_ris_access else 'Nein' }}</dd>
+                            <dt class="col-sm-5">CIPKOM Zugang benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.needs_cipkom_access else 'Nein' }}</dd>
+                            {% if request.needs_cipkom_access and request.cipkom_reference_user %}<dt class="col-sm-5 ps-4">↳ Referenzbenutzer (CIPKOM):</dt><dd class="col-sm-7">{{ request.cipkom_reference_user }}</dd>{% endif %}
+                            {% if request.other_software_notes %}<dt class="col-sm-5">Sonstige Software:</dt><dd class="col-sm-7">{{ request.other_software_notes | nl2br }}</dd>{% endif %}
+                            <hr class="my-1 col-12"><dt class="col-sm-5">Vorzimmer informieren:</dt><dd class="col-sm-7">{{ 'Ja' if request.needs_office_notification else 'Nein' }}</dd>
+                        </dl>
+                    </div>
+                </div>
 
-                        <div class="col-12 mb-4 status-box">
-                            <div class="status-header">🔑 Schlüsselstatus</div>
-                            <div class="status-content">
-                                {{ request[16] or "Initialisierung..." }}
-                                {% if request[17] %}
-                                    <hr>
-                                    <strong>Bestätigung:</strong>
-                                    {{ request[17] }}
+                {# IT Bearbeitungsstatus #}
+                {% set any_it_task_relevant = request.required_windows or request.email_account_required or request.needs_ris_access or request.needs_cipkom_access %}
+                {% if any_it_task_relevant %}
+                <div class="card">
+                    <div class="card-header"><span><span class="emoji-icon">⚙️</span> IT Bearbeitungsstatus (Konten & Software)</span>
+                        {% if all_it_tasks_relevant_and_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
+                    </div>
+                    <div class="card-body">
+                        <dl class="row">
+                            {% if request.required_windows %}
+                                {# ... (Windows Account Details) ... #}
+                                <dt class="col-sm-5">Windows Account erstellt:</dt>
+                                <dd class="col-sm-7">
+                                    {% if request.n8n_ad_creation_status == 'success' %}<span class="badge bg-success">Erfolgreich</span>
+                                    {% elif request.n8n_ad_creation_status %}<span class="badge bg-danger">{{ request.n8n_ad_creation_status | capitalize }}</span>
+                                    {% else %}Ausstehend...{% endif %}
+                                </dd>
+                                <dt class="col-sm-5">Windows Benutzername:</dt><dd class="col-sm-7">{{ request.n8n_ad_username_created or 'Noch nicht erstellt' }}</dd>
+                                <dt class="col-sm-5">Initialpasswort:</dt>
+                                <dd class="col-sm-7">{% if request.n8n_ad_initial_password %}<strong>{{ request.n8n_ad_initial_password }}</strong><br><small class="text-muted"><em>(Benutzer muss Passwort ändern.)</em></small>{% elif request.n8n_ad_creation_status == 'success' and not request.n8n_ad_initial_password %}<span class="text-warning"><em>Passwort gesetzt.</em></span>{% else %}Noch nicht gesetzt/ausstehend...{% endif %}</dd>
+                                <dt class="col-sm-5">N8N AD Statusmeldung:</dt><dd class="col-sm-7">{{ request.n8n_ad_status_message or '-' }}</dd>
+                                {% if request.required_windows and request.status == 'in_bearbeitung' and request.n8n_ad_creation_status and request.n8n_ad_creation_status != 'success' and is_user_in_group_for_template(ENV_IT_GROUP) %}
+                                <dd class="col-12 mt-2 action-button-group"><a href="{{ url_for('manual_username_input', request_id=request.id) }}" class="btn btn-sm btn-warning">Manuelle Username-Eingabe / Erneut versuchen</a></dd>
                                 {% endif %}
-                            </div>
-                        </div>
-                    </dl>
+                                {% if request.email_account_required or request.needs_ris_access or request.needs_cipkom_access %}<hr class="my-1 col-12">{% endif %}
+                            {% endif %}
+                            {% if request.email_account_required %}
+                                {# ... (E-Mail Account Details) ... #}
+                                <dt class="col-sm-5">E-Mail Account Status:</dt>
+                                <dd class="col-sm-7">{% if request.email_created_address %}<span class="badge bg-success">Erfasst</span>{% elif request.email_creation_notified_at %}<span class="badge bg-info text-dark">Support benachrichtigt</span>{% else %}Ausstehend...{% endif %}</dd>
+                                <dt class="col-sm-5">Erstellte E-Mail Adresse:</dt><dd class="col-sm-7">{{ request.email_created_address or 'Noch nicht erfasst' }}</dd>
+                                {% if request.email_creation_confirmed_at %}<dt class="col-sm-5">E-Mail erfasst am:</dt><dd class="col-sm-7">{{ request.email_creation_confirmed_at | format_datetime }} durch: {{ request.email_creation_confirmed_by }}</dd>{% endif %}
+                                {% if is_user_in_group_for_template(ENV_IT_GROUP) %}<dd class="col-sm-12 mt-1 action-button-group"><a href="{{ url_for('update_email_status', request_id=request.id) }}" class="btn btn-sm btn-outline-secondary">E-Mail-Status bearbeiten</a></dd>{% endif %}
+                                {% if request.needs_ris_access or request.needs_cipkom_access %}<hr class="my-1 col-12">{% endif %}
+                            {% endif %}
+                            {% if request.needs_ris_access or request.needs_cipkom_access %}
+                                {# ... (RIS/CIPKOM Details) ... #}
+                                {% if request.n8n_software_status_message %}<dt class="col-sm-5">Software N8N Meldung:</dt><dd class="col-sm-7">{{ request.n8n_software_status_message }}</dd>{% endif %}
+                                {% if request.needs_ris_access %}<dt class="col-sm-5">RIS Zugang:</dt><dd class="col-sm-7">{% if request.ris_access_status_granted_at %}<span class="badge bg-success">Erteilt</span> am {{ request.ris_access_status_granted_at | format_datetime }} (durch {{request.ris_access_status_granted_by}}){% else %}Ausstehend{% endif %}</dd>{% endif %}
+                                {% if request.needs_cipkom_access %}<dt class="col-sm-5">CIPKOM Zugang:</dt><dd class="col-sm-7">{% if request.cipkom_access_status_granted_at %}<span class="badge bg-success">Erteilt</span> am {{ request.cipkom_access_status_granted_at | format_datetime }} (durch {{request.cipkom_access_status_granted_by}}){% else %}Ausstehend{% endif %}</dd>{% endif %}
+                                {% if is_user_in_group_for_template(ENV_IT_GROUP) %}<dd class="col-sm-12 mt-1 action-button-group"><a href="{{ url_for('update_software_status', request_id=request.id) }}" class="btn btn-sm btn-outline-secondary">Software-Zugänge bearbeiten</a></dd>{% endif %}
+                            {% endif %}
+                        </dl>
+                    </div>
+                </div>
+                {% endif %}
+
+                {# HR & AIDA STATUS BLOCK #}
+                <div class="card">
+                    <div class="card-header"><span><span class="emoji-icon">🧑‍⚖️</span> HR & AIDA Status</span>
+                        {% if all_specific_hr_tasks_done and all_aida_tasks_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
+                    </div>
+                    <div class="card-body">
+                        <h6 class="sub-block-header">HR Aufgaben:</h6>
+                        <dl class="row">
+                            {# ... (Inhalt wie vorher) ... #}
+                            <dt class="col-sm-6">Dienstvereinbarung:</dt><dd class="col-sm-6">{% if request.hr_dienstvereinbarung_at %}<span class="badge bg-success">Ja</span> ({{request.hr_dienstvereinbarung_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Datenschutzblatt:</dt><dd class="col-sm-6">{% if request.hr_datenschutz_at %}<span class="badge bg-success">Ja</span> ({{request.hr_datenschutz_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Über DSGVO informiert:</dt><dd class="col-sm-6">{% if request.hr_dsgvo_informed_at %}<span class="badge bg-success">Ja</span> ({{request.hr_dsgvo_informed_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Dienstanweisung IT:</dt><dd class="col-sm-6">{% if request.hr_it_directive_at %}<span class="badge bg-success">Ja</span> ({{request.hr_it_directive_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Personaldatenblatt Abrechnung:</dt><dd class="col-sm-6">{% if request.hr_payroll_sheet_at %}<span class="badge bg-success">Ja</span> ({{request.hr_payroll_sheet_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Leitlinien Informationssicherheit:</dt><dd class="col-sm-6">{% if request.hr_security_guidelines_at %}<span class="badge bg-success">Ja</span> ({{request.hr_security_guidelines_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                        </dl>
+                        <h6 class="sub-block-header mt-3">AIDA Aufgaben:</h6>
+                        <dl class="row">
+                            <dt class="col-sm-6">AIDA-Zugang erstellt:</dt><dd class="col-sm-6">{% if request.aida_access_created_at %}<span class="badge bg-success">Ja</span> ({{request.aida_access_created_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Schlüssel in AIDA aufgenommen:</dt><dd class="col-sm-6">{% if request.aida_key_registered_at %}<span class="badge bg-success">Ja</span> ({{request.aida_key_registered_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                        </dl>
+                        {% if is_user_in_group_for_template(ENV_HR_GROUP) %}
+                        <div class="action-button-group"><a href="{{ url_for('hr_update_status', request_id=request.id) }}" class="btn btn-sm btn-outline-primary mt-2">HR & AIDA-Status bearbeiten</a></div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                {# VORZIMMER Status Block #}
+                {% if request.needs_office_notification %}
+                <div class="card">
+                    <div class="card-header"><span><span class="emoji-icon">🏢</span> Vorzimmer Aufgaben Status</span>
+                        {% if all_specific_office_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
+                    </div>
+                    <div class="card-body">
+                        <dl class="row">
+                            {# ... (Inhalt wie vorher) ... #}
+                            <dt class="col-sm-6">Outlook-Kontakt angelegt:</dt><dd class="col-sm-6">{% if request.office_outlook_contact_at %}<span class="badge bg-success">Ja</span> ({{request.office_outlook_contact_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">In Verteilerlisten:</dt><dd class="col-sm-6">{% if request.office_distribution_lists_at %}<span class="badge bg-success">Ja</span> ({{request.office_distribution_lists_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Telefonliste ergänzt:</dt><dd class="col-sm-6">{% if request.office_phone_list_at %}<span class="badge bg-success">Ja</span> ({{request.office_phone_list_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Geburtstagskalender:</dt><dd class="col-sm-6">{% if request.office_birthday_calendar_at %}<span class="badge bg-success">Ja</span> ({{request.office_birthday_calendar_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Begrüßungsgeschenk:</dt><dd class="col-sm-6">{% if request.office_welcome_gift_at %}<span class="badge bg-success">Ja</span> ({{request.office_welcome_gift_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Termin Bürgermeister:</dt>
+                            <dd class="col-sm-6">{% if request.office_mayor_appt_confirmed_at %}<span class="badge bg-success">Ja</span> am {{ request.office_mayor_appt_date | format_datetime('%d.%m.%Y %H:%M') }}{% elif request.office_mayor_appt_date %}{{ request.office_mayor_appt_date | format_datetime('%d.%m.%Y %H:%M') }} (noch nicht final bestätigt){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Visitenkarten bestellt:</dt><dd class="col-sm-6">{% if request.office_business_cards_at %}<span class="badge bg-success">Ja</span> ({{request.office_business_cards_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Organigramm ergänzt:</dt><dd class="col-sm-6">{% if request.office_organigram_at %}<span class="badge bg-success">Ja</span> ({{request.office_organigram_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                            <dt class="col-sm-6">Homepage aktualisiert:</dt><dd class="col-sm-6">{% if request.office_homepage_updated_at %}<span class="badge bg-success">Ja</span> ({{request.office_homepage_updated_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
+                        </dl>
+                        {% if is_user_in_group_for_template(ENV_OFFICE_GROUP) %}
+                        <div class="action-button-group"><a href="{{ url_for('update_office_status', request_id=request.id) }}" class="btn btn-sm btn-outline-primary mt-2">Vorzimmer-Aufgaben bearbeiten</a></div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="col-md-6">
+                {# HARDWARE & TELEFON BLOCK #}
+                <div class="card">
+                     <div class="card-header"><span><span class="emoji-icon">🛠️</span> Hardware & Telefon</span>
+                         {% if hw_main_done and phone_all_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
+                    </div>
+                    <div class="card-body">
+                        {% if request.hardware_required or request.needs_fixed_phone %}
+                        <p><strong>Beantragt:</strong></p>
+                        <pre>{{ get_hardware_details_for_display(request) }}</pre>
+                        <hr class="my-2">
+                        <p><strong>Fortschritt Bearbeitung:</strong></p>
+                        {% if request.hardware_required %}
+                            <h6>Hardware-Komponenten:</h6>
+                            <dl class="row">
+                                {# ... (Inhalt wie vorher) ... #}
+                                <dt class="col-sm-5">Bestellt:</dt><dd class="col-sm-7">{% if request.hw_status_ordered_at %}Ja, am {{ request.hw_status_ordered_at | format_datetime }} (durch {{ request.hw_status_ordered_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
+                                <dt class="col-sm-5">Geliefert:</dt><dd class="col-sm-7">{% if request.hw_status_delivered_at %}Ja, am {{ request.hw_status_delivered_at | format_datetime }} (durch {{ request.hw_status_delivered_by }}){% elif request.hw_status_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                                <dt class="col-sm-5">Installiert:</dt><dd class="col-sm-7">{% if request.hw_status_installed_at %}Ja, am {{ request.hw_status_installed_at | format_datetime }} (durch {{ request.hw_status_installed_by }}){% elif request.hw_status_delivered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                                <dt class="col-sm-5">Aufgebaut/Fertig:</dt><dd class="col-sm-7">{% if request.hw_status_setup_done_at %}Ja, am {{ request.hw_status_setup_done_at | format_datetime }} (durch {{ request.hw_status_setup_done_by }}){% elif request.hw_status_installed_at %}Ausstehend{% else %}-{% endif %}</dd>
+                            </dl>
+                        {% endif %}
+                        {% if request.needs_fixed_phone %}
+                             <h6 class="mt-2 {% if request.hardware_required %}border-top pt-2{% endif %}">Telefon:</h6>
+                             <dl class="row">
+                                <dt class="col-sm-5">Telefon Bestellt:</dt><dd class="col-sm-7">{% if request.phone_status_ordered_at %}Ja, am {{ request.phone_status_ordered_at | format_datetime }} (durch {{ request.phone_status_ordered_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
+                                <dt class="col-sm-5">Telefon Aufgebaut/Installiert:</dt>
+                                <dd class="col-sm-7">{% if request.phone_status_setup_at %}Ja (Nr: <strong>{{request.phone_number_assigned or 'N/A'}}</strong>) am {{ request.phone_status_setup_at | format_datetime }} (durch {{ request.phone_status_setup_by }}){% elif request.phone_status_ordered_at %}Ausstehend{% else %}-{% endif %}</dd>
+                            </dl>
+                        {% endif %}
+                        {% if request.n8n_hardware_status_message %}<hr class="my-2"><dl class="row"><dt class="col-sm-5">N8N Meldung (HW/Tel):</dt><dd class="col-sm-7">{{ request.n8n_hardware_status_message }}</dd></dl>{% endif %}
+                        {% if is_user_in_group_for_template(ENV_IT_GROUP) %}
+                        <div class="action-button-group"><a href="{{ url_for('update_hardware_status', request_id=request.id) }}" class="btn btn-sm btn-outline-primary mt-2">Hardware/Telefon-Status bearbeiten</a></div>
+                        {% endif %}
+                        {% else %}
+                         <p>Keine Hardware oder Festnetztelefon für diesen Antrag angefordert.</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                {# BAUAMT BLOCK #}
+                <div class="card">
+                    <div class="card-header"><span><span class="emoji-icon">🏗️</span> Bauamt (Schlüssel, Zimmer & Arbeitsplatz)</span>
+                        {% if bauamt_all_relevant_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
+                    </div>
+                    <div class="card-body">
+                        <h6><span class="emoji-icon">🔑</span> Schlüssel:</h6>
+                        <dl class="row">
+                            {# ... (Inhalt wie vorher) ... #}
+                            <dt class="col-sm-5">Schlüssel benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.key_required else 'Nein' }}</dd>
+                            {% if request.key_required %}<dt class="col-sm-5">Vorbereitet:</dt><dd class="col-sm-7">{% if request.key_status_prepared_at %}Ja, am {{ request.key_status_prepared_at | format_datetime }} ({{ request.key_status_prepared_by }}){% else %}Nein / Ausstehend{% endif %}</dd><dt class="col-sm-5">Ausgegeben:</dt><dd class="col-sm-7">{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% elif request.key_status_prepared_at %}Ausstehend{% else %}-{% endif %}</dd>{% if request.key_issuance_protocol_filename %}<dt class="col-sm-5">Protokoll:</dt><dd class="col-sm-7"><a href="{{ url_for('uploaded_file', filename=request.key_issuance_protocol_filename) }}" target="_blank">{{ request.key_issuance_protocol_filename }}</a></dd>{% endif %}{% endif %}
+                        </dl>
+                        <h6 class="mt-3"><span class="emoji-icon">🚪</span> Zimmer:</h6>
+                        <dl class="row"><dt class="col-sm-5">Zimmernummer (Bauamt):</dt><dd class="col-sm-7">{{ request.room_number or 'Noch nicht festgelegt' }}</dd></dl>
+                        <h6 class="mt-3"><span class="emoji-icon">🪑</span> Arbeitsplatzausstattung:</h6>
+                         {% if request.workplace_no_new_equipment %}<p class="text-muted"><em>Keine neue Ausstattung laut Bauamt benötigt.</em></p>
+                         {% else %}{# ... (Logik für Tisch, Stuhl, Monitorarme wie vorher) ... #}{% endif %}
+                        {% if request.n8n_key_status_message %}<hr class="my-2"><dl class="row"><dt class="col-sm-5">N8N Meldung (Bauamt):</dt><dd class="col-sm-7">{{ request.n8n_key_status_message }}</dd></dl>{% endif %}
+                        {% if is_user_in_group_for_template(ENV_BAUAMT_GROUP) %}
+                        <div class="action-button-group"><a href="{{ url_for('update_bauamt_status', request_id=request.id) }}" class="btn btn-sm btn-outline-primary mt-2">Bauamt-Status bearbeiten</a></div>
+                        {% endif %}
+                    </div>
                 </div>
             </div>
+        </div>
 
-            <!-- Vorhandene Buttons bleiben gleich -->
-
-        {% else %}
-            <div class="alert alert-danger">
-                Der Antrag konnte nicht gefunden werden.
-            </div>
+        {% if request.comments %}
+        <div class="card mt-3 print-page-break-before"> {# print-page-break-before für PDF relevant #}
+            <div class="card-header"><span><span class="emoji-icon">📝</span> Kommentare des Antragstellers</span></div>
+            <div class="card-body"><p>{{ request.comments | nl2br }}</p></div>
+        </div>
         {% endif %}
+
+        <div class="mt-4 action-button-group">
+            <h3>Aktionen</h3>
+            {% if request.status == 'offen' and can_approve %}
+                <form method="POST" action="{{ url_for('approve_request', request_id=request.id) }}" style="display: inline-block; margin-right: 10px;">
+                    <button type="submit" class="btn btn-success"><span class="emoji-icon">✔️</span> Antrag genehmigen & Bearbeitung starten</button>
+                </form>
+                {% if is_user_in_group_for_template(ENV_ADMIN_MAIN_GROUP) %} {# Nur Admins können direkt ablehnen #}
+                <form method="POST" action="{{ url_for('reject_request', request_id=request.id) }}" style="display: inline-block;">
+                    <button type="submit" class="btn btn-danger"><span class="emoji-icon">❌</span> Antrag ablehnen</button>
+                </form>
+                {% endif %}
+            {% elif request.status == 'in_bearbeitung' %}
+                 {% if all_subprocesses_completed and is_user_in_group_for_template(ENV_ADMIN_MAIN_GROUP) %}
+                    <div class="alert alert-info">Alle Teilprozesse scheinen abgeschlossen. Sie können den Antrag nun manuell abschließen.</div>
+                    <form method="POST" action="{{ url_for('manual_complete_request', request_id=request.id) }}" style="display: inline-block; margin-right: 10px;">
+                        <button type="submit" class="btn btn-primary">🚀 Antrag manuell abschließen</button>
+                    </form>
+                {% elif request.pending_subprocesses %}
+                    <div class="alert alert-warning">Folgende Teilprozesse sind noch offen, bevor der Antrag abgeschlossen werden kann:
+                        <ul>{% for task in request.pending_subprocesses %}<li>{{ task }}</li>{% endfor %}</ul>
+                    </div>
+                 {% else %}<p><em>Dieser Antrag befindet sich in Bearbeitung.</em></p>
+                 {% endif %}
+            {% elif request.status == 'abgeschlossen' or request.status == 'abgelehnt' or (request.status and 'fehler' in request.status) %}
+             <p class="mt-3"><em>Dieser Antrag wurde bereits final bearbeitet (Status: {{ request.status | replace('_', ' ') | capitalize }}).</em></p>
+            {% elif not can_approve and session.user and request.status == 'offen' %}
+             <p class="mt-3"><em>Sie sind angemeldet, aber nicht berechtigt diesen Antrag zu genehmigen. Er wartet auf Freigabe durch {{ request.supervisor or 'den zuständigen Vorgesetzten' }}.</em></p>
+            {% elif not session.user %}<p class="mt-3"><a href="{{ url_for('login', next=request.url if request else None) }}">Bitte einloggen</a>.</p>
+            {% endif %}
+        </div>
+
+        <div class="mt-3 mb-5 action-button-group">
+            {% if is_user_in_group_for_template(ENV_PRINT_GROUP) or session.is_admin %}
+            <a href="{{ url_for('print_request_combined', request_id=request.id) }}" class="btn btn-info me-2" target="_blank">
+                <span class="emoji-icon">📄</span> Kombinierten Antrag als PDF anzeigen/drucken
+            </a>
+            {% endif %}
+            {% if session.is_admin %}
+            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zurück zum Admin-Dashboard</a>
+            {% endif %}
+        </div>
     </div>
 
-    <script>
-        // Automatische Aktualisierung alle 30 Sekunden
-        setInterval(() => {
-            window.location.reload();
-        }, 30000);
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

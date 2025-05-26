@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Vorzimmer Status - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; }
+        .status-section { margin-bottom: 1.5rem; }
+        .task-item {
+            padding: 1rem;
+            border: 1px solid #dee2e6;
+            border-radius: .375rem;
+            margin-bottom: 1rem;
+        }
+        .status-done { background-color: #d1e7dd; border-color: #badbcc; }
+        .status-done p, .status-done h6 { color: #0f5132; }
+        .navbar { margin-bottom: 1rem; } /* Geändert */
+        .emoji-icon { margin-right: 0.5em; }
+    </style>
+</head>
+<body class="pt-4">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavOfficeStatus">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavOfficeStatus">
+            <ul class="navbar-nav me-auto">
+                {% if session.is_admin %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request_item else None) }}">Login</a></li>
+                {% endif %}
+                {% if request_item and session.is_admin %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('view_request', request_id=request_item.id) }}">Zurück zur Antragsansicht</a></li>
+                {% elif request_item and session.user %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Zum Dashboard</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% if request_item %}
+    <h1>Vorzimmer Status für Antrag ID: {{ request_item.id }}</h1>
+    <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
+    <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p>
+    <hr>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% if not request_item.needs_office_notification %}
+        <div class="alert alert-info mt-3">Für diesen Antrag wurde "Vorzimmer informieren" nicht ausgewählt. Daher sind hier keine spezifischen Vorzimmer-Aufgaben zu bearbeiten.</div>
+    {% else %}
+    <div class="status-section">
+        <h3 class="mt-4"><span class="emoji-icon">🏢</span> Aufgaben Vorzimmer</h3>
+
+        {% set office_tasks = [
+            ('office_outlook_contact', 'Outlook-Kontakt angelegt', request_item.office_outlook_contact_at, request_item.office_outlook_contact_by, 'Outlook-Kontakt erstellt'),
+            ('office_distribution_lists', 'In Verteilerlisten aufgenommen', request_item.office_distribution_lists_at, request_item.office_distribution_lists_by, 'Verteilerlisten aktualisiert'),
+            ('office_phone_list', 'Telefonliste ergänzt', request_item.office_phone_list_at, request_item.office_phone_list_by, 'Telefonliste ergänzt'),
+            ('office_birthday_calendar', 'Geburtstagskalender (Liste & Kalender BM)', request_item.office_birthday_calendar_at, request_item.office_birthday_calendar_by, 'Geburtstagskalender ergänzt'),
+            ('office_welcome_gift', 'Begrüßungsgeschenk bereit', request_item.office_welcome_gift_at, request_item.office_welcome_gift_by, 'Begrüßungsgeschenk bereit'),
+            ('office_business_cards', 'Visitenkarten bestellt', request_item.office_business_cards_at, request_item.office_business_cards_by, 'Visitenkarten bestellt'),
+            ('office_organigram', 'Organigramm ergänzt', request_item.office_organigram_at, request_item.office_organigram_by, 'Organigramm ergänzt'),
+            ('office_homepage_update', 'Änderungen Homepage durchgeführt', request_item.office_homepage_updated_at, request_item.office_homepage_updated_by, 'Homepage aktualisiert')
+        ] %}
+
+        {% for action_key_base, label, completed_at, completed_by, success_msg_part in office_tasks %}
+        <div class="task-item {% if completed_at %}status-done{% endif %}">
+            <h6>{{ label }}</h6>
+            {% if not completed_at %}
+                <form method="POST" action="{{ url_for('update_office_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="{{ action_key_base }}_done">
+                    <button type="submit" class="btn btn-primary btn-sm">Als erledigt markieren</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ {{ success_msg_part }} am: {{ completed_at | format_datetime }} durch: {{ completed_by }}</p>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+        {# Termin für Begrüßung mit Bürgermeister #}
+        <div class="task-item {% if request_item.office_mayor_appt_confirmed_at %}status-done{% endif %}">
+            <h6><span class="emoji-icon">🗓️</span> Termin für Begrüßung mit Bürgermeister</h6>
+            {% if not request_item.office_mayor_appt_confirmed_at %}
+                <form method="POST" action="{{ url_for('update_office_status', request_id=request_item.id) }}" id="mayor_appt_form-{{request_item.id}}">
+                    <input type="hidden" name="action" value="mayor_appointment_set">
+                    <div class="mb-2">
+                        <label for="mayor_appt_date-{{request_item.id}}" class="form-label">Datum & Uhrzeit des Termins:</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="mayor_appt_date-{{request_item.id}}" name="mayor_appt_date"
+                               value="{{ request_item.office_mayor_appt_date.replace(' ', 'T') if request_item.office_mayor_appt_date else '' }}" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Termin bestätigen & speichern</button>
+                </form>
+            {% else %}
+                <p class="text-success mb-0">✔️ Termin bestätigt für: {{ request_item.office_mayor_appt_date | format_datetime('%d.%m.%Y %H:%M') }}
+                    (Erfasst am: {{ request_item.office_mayor_appt_confirmed_at | format_datetime }} durch: {{ request_item.office_mayor_appt_confirmed_by }})
+                </p>
+                <button type="button" class="btn btn-outline-secondary btn-sm mt-1"
+                        id="editMayorApptBtn-{{ request_item.id }}"
+                        onclick="toggleMayorApptEditForm('{{ request_item.id }}', true)">Termin ändern</button>
+                <form method="POST" id="mayor_appt_date_edit_form-{{ request_item.id }}" action="{{ url_for('update_office_status', request_id=request_item.id) }}" style="display:none;" class="mt-1">
+                    <input type="hidden" name="action" value="mayor_appointment_set">
+                     <div class="mb-2">
+                        <label for="mayor_appt_date_edit-{{ request_item.id }}" class="form-label">Neues Datum & Uhrzeit des Termins:</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="mayor_appt_date_edit-{{ request_item.id }}" name="mayor_appt_date"
+                               value="{{ request_item.office_mayor_appt_date.replace(' ', 'T') if request_item.office_mayor_appt_date else '' }}" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Neuen Termin speichern</button>
+                     <button type="button" class="btn btn-light btn-sm"
+                             onclick="toggleMayorApptEditForm('{{ request_item.id }}', false)">Abbrechen</button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %} 
+
+    <div class="mt-4 mb-5">
+        {% if session.is_admin %}
+            <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
+        {% elif session.user %}
+            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zum Dashboard</a>
+        {% endif %}
+    </div>
+    {% else %}
+        <div class="alert alert-warning mt-3">Antrag nicht gefunden oder konnte nicht geladen werden.</div>
+        <a href="{{ url_for('admin') }}" class="btn btn-secondary mt-3">Zurück zum Admin-Dashboard</a>
+    {% endif %}
+</div>
+<script>
+    function toggleMayorApptEditForm(requestId, showForm) {
+        const form = document.getElementById('mayor_appt_date_edit_form-' + requestId);
+        const button = document.getElementById('editMayorApptBtn-' + requestId); 
+        if (form && button) {
+            form.style.display = showForm ? 'block' : 'none';
+            button.style.display = showForm ? 'none' : 'inline-block';
+        } else {
+            console.error("Konnte Formular oder Button für Bürgermeistertermin-Änderung nicht finden. RequestID:", requestId);
+        }
+    }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Hardware & Telefon Status - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { padding-top: 70px; }
+        .status-block { margin-bottom: 15px; padding: 15px; border: 1px solid #dee2e6; border-radius: .375rem; }
+        .status-done { background-color: #d1e7dd; border-color: #badbcc; } /* Grün für erledigt */
+        .status-done p, .status-done h5, .status-done h6 { color: #0f5132; }
+        .status-pending { background-color: #fff3cd; border-color: #ffeeba; } /* Gelb für anstehend/in Arbeit */
+        .status-next { background-color: #f8f9fa; border-color: #dee2e6; } /* Grau für noch nicht aktivierbar */
+        .status-next button { opacity: 0.65; }
+        .navbar { margin-bottom: 1rem; }
+        pre { white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+</head>
+<body class="pt-4">
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNavHwStatus">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNavHwStatus">
+            <ul class="navbar-nav me-auto">
+                {% if session.is_admin %}
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('form') }}">Formular</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Admin</a></li>
+                    <li class="nav-item"><a class="nav-link" href="{{ url_for('archived') }}">Archiv</a></li>
+                {% endif %}
+            </ul>
+            <ul class="navbar-nav">
+                {% if session.user %}
+                <li class="nav-item"><a class="nav-link" href="#">👤 {{ session.user }}</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('logout') }}">Logout</a></li>
+                {% else %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('login', next=request.url if request_item else None) }}">Login</a></li>
+                {% endif %}
+                {% if request_item and session.is_admin %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('view_request', request_id=request_item.id) }}">Zurück zur Antragsansicht</a></li>
+                 {% elif request_item and session.user %}
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('admin') }}">Zum Dashboard</a></li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container">
+    {% if request_item %}
+    <h1>Hardware & Telefon Status für Antrag ID: {{ request_item.id }}</h1>
+    <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
+    <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p> {# Format korrigiert #}
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show mt-3" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    {% if request_item.hardware_required or request_item.needs_fixed_phone %}
+        <div class="card mt-3">
+            <div class="card-header">Benötigte Hardware / Telefon (laut Antrag)</div>
+            <div class="card-body">
+                <pre>{{ hardware_to_order_text }}</pre>
+            </div>
+        </div>
+
+        <h3 class="mt-4">Status-Updates</h3>
+
+        {% if request_item.hardware_required %}
+            <div class="status-block {% if request_item.hw_status_ordered_at %}status-done{% else %}status-pending{% endif %}">
+                <h5>Schritt 1: Hardware Bestellung</h5>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="ordered">
+                    <button type="submit" class="btn {% if request_item.hw_status_ordered_at %}btn-success{% else %}btn-primary{% endif %}"
+                            {{ 'disabled' if request_item.hw_status_ordered_at }}>
+                        {% if request_item.hw_status_ordered_at %}✔️ Hardware bestellt{% else %}Hardware bestellen{% endif %}
+                    </button>
+                </form>
+                {% if request_item.hw_status_ordered_at %}
+                    <small class="text-muted d-block mt-1">Bestellt am: {{ request_item.hw_status_ordered_at | format_datetime }} durch: {{ request_item.hw_status_ordered_by }}</small>
+                {% endif %}
+            </div>
+
+            <div class="status-block {% if request_item.hw_status_delivered_at %}status-done{% elif request_item.hw_status_ordered_at %}status-pending{% else %}status-next{% endif %}">
+                <h5>Schritt 2: Hardware Lieferung</h5>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="delivered">
+                    <button type="submit" class="btn {% if request_item.hw_status_delivered_at %}btn-success{% elif request_item.hw_status_ordered_at %}btn-primary{% else %}btn-secondary{% endif %}"
+                            {{ 'disabled' if not request_item.hw_status_ordered_at or request_item.hw_status_delivered_at }}>
+                        {% if request_item.hw_status_delivered_at %}✔️ Hardware geliefert{% else %}Als geliefert markieren{% endif %}
+                    </button>
+                </form>
+                {% if request_item.hw_status_delivered_at %}
+                    <small class="text-muted d-block mt-1">Geliefert am: {{ request_item.hw_status_delivered_at | format_datetime }} durch: {{ request_item.hw_status_delivered_by }}</small>
+                {% endif %}
+            </div>
+
+            <div class="status-block {% if request_item.hw_status_installed_at %}status-done{% elif request_item.hw_status_delivered_at %}status-pending{% else %}status-next{% endif %}">
+                <h5>Schritt 3: Hardware Installation</h5>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="installed">
+                    <button type="submit" class="btn {% if request_item.hw_status_installed_at %}btn-success{% elif request_item.hw_status_delivered_at %}btn-primary{% else %}btn-secondary{% endif %}"
+                            {{ 'disabled' if not request_item.hw_status_delivered_at or request_item.hw_status_installed_at }}>
+                        {% if request_item.hw_status_installed_at %}✔️ Hardware installiert{% else %}Als installiert markieren{% endif %}
+                    </button>
+                </form>
+                {% if request_item.hw_status_installed_at %}
+                    <small class="text-muted d-block mt-1">Installiert am: {{ request_item.hw_status_installed_at | format_datetime }} durch: {{ request_item.hw_status_installed_by }}</small>
+                {% endif %}
+            </div>
+
+            <div class="status-block {% if request_item.hw_status_setup_done_at %}status-done{% elif request_item.hw_status_installed_at %}status-pending{% else %}status-next{% endif %}">
+                <h5>Schritt 4: Hardware Aufbau/Abschluss</h5>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="setup_done">
+                    <button type="submit" class="btn {% if request_item.hw_status_setup_done_at %}btn-success{% elif request_item.hw_status_installed_at %}btn-primary{% else %}btn-secondary{% endif %}"
+                            {{ 'disabled' if not request_item.hw_status_installed_at or request_item.hw_status_setup_done_at }}>
+                        {% if request_item.hw_status_setup_done_at %}✔️ Hardware aufgebaut/fertig{% else %}Als aufgebaut/fertig markieren{% endif %}
+                    </button>
+                </form>
+                {% if request_item.hw_status_setup_done_at %}
+                    <small class="text-muted d-block mt-1">Abgeschlossen am: {{ request_item.hw_status_setup_done_at | format_datetime }} durch: {{ request_item.hw_status_setup_done_by }}</small>
+                {% endif %}
+            </div>
+        {% endif %}
+
+        {% if can_update_phone_on_hw_page %} {# Diese Variable kommt von app.py #}
+            <hr class="my-3">
+            <h5>Festarbeitsplatztelefon</h5>
+            <div class="status-block {% if request_item.phone_status_ordered_at %}status-done{% else %}status-pending{% endif %}">
+                <h6>Schritt A: Telefon Bestellung</h6>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" style="display: inline-block;">
+                    <input type="hidden" name="action" value="phone_ordered">
+                    <button type="submit" class="btn {% if request_item.phone_status_ordered_at %}btn-success{% else %}btn-primary{% endif %}"
+                            {{ 'disabled' if request_item.phone_status_ordered_at }}>
+                        {% if request_item.phone_status_ordered_at %}✔️ Telefon bestellt{% else %}Telefon bestellen{% endif %}
+                    </button>
+                </form>
+                {% if request_item.phone_status_ordered_at %}
+                    <small class="text-muted d-block mt-1">Bestellt am: {{ request_item.phone_status_ordered_at | format_datetime }} durch: {{ request_item.phone_status_ordered_by }}</small>
+                {% endif %}
+            </div>
+
+            <div class="status-block {% if request_item.phone_status_setup_at %}status-done{% elif request_item.phone_status_ordered_at %}status-pending{% else %}status-next{% endif %}">
+                <h6>Schritt B: Telefon Aufbau/Installation</h6>
+                <form method="POST" action="{{ url_for('update_hardware_status', request_id=request_item.id) }}" class="mb-3">
+                    <input type="hidden" name="action" value="phone_setup_done">
+                    <div class="mb-2">
+                        <label for="phone_number_assigned" class="form-label">Zugewiesene Rufnummer:</label>
+                        <input type="text" class="form-control form-control-sm" id="phone_number_assigned" name="phone_number_assigned"
+                               value="{{ request_item.phone_number_assigned or '' }}"
+                               {{ 'readonly' if request_item.phone_status_setup_at else '' }} required>
+                    </div>
+                    <button type="submit" class="btn {% if request_item.phone_status_setup_at %}btn-success{% elif request_item.phone_status_ordered_at %}btn-primary{% else %}btn-secondary{% endif %}"
+                            {{ 'disabled' if not request_item.phone_status_ordered_at or request_item.phone_status_setup_at }}>
+                        {% if request_item.phone_status_setup_at %}✔️ Telefon aufgebaut/installiert{% else %}Als aufgebaut/installiert bestätigen{% endif %}
+                    </button>
+                </form>
+                {% if request_item.phone_status_setup_at %}
+                    <small class="text-muted d-block mt-1">Aufgebaut am: {{ request_item.phone_status_setup_at | format_datetime }} durch: {{ request_item.phone_status_setup_by }}.
+                    <br>Zugewiesene Rufnummer: <strong>{{ request_item.phone_number_assigned }}</strong></small>
+                {% endif %}
+            </div>
+        {% endif %}
+    {% else %}
+        <p class="alert alert-info mt-3">Für diesen Antrag wurde keine Hardware oder kein Festnetztelefon angefordert.</p>
+    {% endif %}
+
+    <div class="mt-4 mb-5">
+        {% if session.is_admin %}
+            <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
+        {% elif session.user %}
+            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zum Dashboard</a>
+        {% endif %}
+    </div>
+    {% else %}
+        <div class="alert alert-warning mt-3">Antrag nicht gefunden oder konnte nicht geladen werden.</div>
+        <a href="{{ url_for('admin') }}" class="btn btn-secondary mt-3">Zurück zum Admin-Dashboard</a>
+    {% endif %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
