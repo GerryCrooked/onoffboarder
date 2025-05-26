@@ -1,44 +1,68 @@
-OnOffBoarder
-OnOffBoarder ist eine Open-Source-Lösung zur Automatisierung von Onboarding- und Offboarding-Prozessen in Unternehmen. Durch die Integration von Webformularen, Datenbanken und Automatisierungs-Workflows ermöglicht es eine effiziente Verwaltung von Mitarbeiterwechseln.
+# 🚀 On-/Offboarding Workflow System
 
-Funktionen
-Webbasierte Formulare zur Erfassung relevanter Mitarbeiterdaten
+Ein webbasiertes System zur Digitalisierung und Automatisierung von Mitarbeiter-Onboarding- und Offboarding-Prozessen, entwickelt mit Flask, Active Directory-Integration und n8n für die Workflow-Automatisierung.
 
-Datenbankintegration zur sicheren Speicherung und Verwaltung von Informationen
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://www.python.org/) [![Flask](https://img.shields.io/badge/Flask-2.x-green?logo=flask&logoColor=white)](https://flask.palletsprojects.com/) [![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker&logoColor=white)](https://www.docker.com/) [![n8n](https://img.shields.io/badge/n8n-Workflow%20Automation-orange?logo=n8n&logoColor=white)](https://n8n.io/)
 
-Automatisierte Workflows zur Durchführung von Onboarding- und Offboarding-Prozessen
+---
 
-Docker-Containerisierung für einfache Bereitstellung und Skalierbarkeit
+## 🎯 Ziel des Projekts
 
-Installation
-Voraussetzungen
-Docker und Docker Compose
+Das manuelle Management von Onboarding- und Offboarding-Prozessen für Mitarbeiter ist fehleranfällig, zeitaufwendig und oft intransparent. Dieses Projekt zielt darauf ab, diese Prozesse durch eine zentrale Webanwendung zu digitalisieren, zu standardisieren und mithilfe von Workflow-Automatisierung (n8n) und Active Directory-Integration effizienter zu gestalten.
 
-Optional: n8n für erweiterte Workflow-Automatisierung
+Von der Antragsstellung über Genehmigungen bis hin zur Abarbeitung der technischen und administrativen Aufgaben durch verschiedene Abteilungen (IT, HR, Bauamt, Vorzimmer) wird alles in einem System erfasst und der Status nachverfolgbar gemacht.
 
-Schritte
-Repository klonen:
-´´´git clone https://github.com/GerryCrooked/onoffboarder.git
-cd onoffboarder´´´
+---
 
-Umgebungsvariablen konfigurieren:
-```cp .env.example .env ```
+## ✨ Features
 
+* **📝 Web-Formular**: Zentrales Formular zur Erfassung aller relevanten Daten für On- und Offboarding-Anträge.
+* **🔄 Dynamische Formularfelder**: Anpassung der Formularfelder basierend auf vorherigen Eingaben (z.B. Anzeige von Abteilungs- und Vorgesetztenauswahl nur bei Anforderung eines Windows-Kontos).
+* **🔐 Active Directory Integration**:
+    * Benutzerauthentifizierung für den Zugriff auf die Anwendung.
+    * Dynamisches Laden von Organisationseinheiten (OUs), Benutzern und Vorgesetzten aus dem AD.
+    * Granulare Zugriffskontrolle basierend auf AD-Gruppenmitgliedschaften für verschiedene Funktionen und Ansichten.
+* **⚙️ Workflow-Automatisierung mit n8n**:
+    * Anstoßen von n8n-Workflows via Webhooks nach Genehmigung eines Antrags.
+    * Potenzial für automatisierte AD-Benutzeranlage, E-Mail-Erstellung, Hardware-Bestellung etc. durch n8n.
+    * Rückmeldung von n8n an die Flask-Anwendung über den Status von Automatisierungsaufgaben.
+* **📊 Status-Tracking**: Detaillierte Statusverfolgung für Aufgaben der beteiligten Abteilungen:
+    * IT (Windows-Konto, E-Mail, Software-Zugänge, Hardware)
+    * HR & AIDA (Verträge, Datenschutz, Systemzugänge)
+    * Bauamt (Schlüssel, Zimmer, Arbeitsplatzausstattung)
+    * Vorzimmer (Organisatorisches, Termine, Kommunikation)
+* **👍 Genehmigungsprozess**: Mehrstufiger Prozess mit Genehmigung durch den Vorgesetzten.
+* **📄 PDF-Generierung**: Erstellung eines zusammenfassenden PDF-Dokuments für jeden Antrag, inklusive der Möglichkeit, relevante Anhänge (z.B. Schlüsselübergabeprotokolle) beizufügen.
+* **🗄️ Archivierung**: Archivierung abgeschlossener und abgelehnter Anträge.
+* **🐳 Docker-Deployment**: Einfaches Setup und Deployment der gesamten Anwendung (Flask-Webanwendung & n8n) mithilfe von Docker und Docker Compose.
+* **🔑 Konfiguration über `.env`**: Flexible Anpassung an die lokale Umgebung durch Umgebungsvariablen.
 
-Container starten:
-```docker-compose up -d ```
+---
 
-Projektstruktur
+## 🛠️ Technologie-Stack
 
-onoffboarder/
-├── db/                 # Datenbankkonfigurationen und -skripte
-├── n8n/                # n8n-Workflows und -Konfigurationen
-├── webform/            # Webformular-Frontend
-├── .env.example        # Beispiel für Umgebungsvariablen
-├── docker-compose.yml  # Docker-Compose-Konfiguration
-└── LICENSE             # Lizenzinformationen
-Lizenz
-Dieses Projekt steht unter der MIT-Lizenz.
+* **Backend**: Python 3.11+, Flask
+* **Frontend**: HTML5, Bootstrap 5, JavaScript, jQuery, jsTree
+* **Datenbank**: SQLite
+* **Verzeichnisdienst-Integration**: `python-ldap3` für Active Directory
+* **PDF-Generierung**: WeasyPrint, PyPDF2 (oder pypdf)
+* **Workflow-Automatisierung**: n8n (via Webhooks)
+* **Containerisierung**: Docker, Docker Compose
 
-Mitwirken
-Beiträge sind herzlich willkommen. Bitte öffne ein Issue oder erstelle einen Pull Request, um zur Weiterentwicklung beizutragen.
+---
+
+## ⚙️ Setup & Installation
+
+### Voraussetzungen
+
+* Docker ([Anleitung](https://docs.docker.com/get-docker/))
+* Docker Compose ([Anleitung](https://docs.docker.com/compose/install/))
+* Ein funktionierendes Active Directory für die Benutzerauthentifizierung und Datenabfrage.
+* Ein SMTP-Server für den E-Mail-Versand.
+* Eine laufende n8n-Instanz (kann auch die im Docker Compose enthaltene sein) mit konfigurierten Webhooks.
+
+### 1. Repository klonen
+
+```bash
+git clone [https://github.com/GerryCrooked/onoffboarder.git](https://github.com/GerryCrooked/onoffboarder.git)
+cd onoffboarder
