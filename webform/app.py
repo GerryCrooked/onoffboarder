@@ -2,936 +2,1356 @@ import smtplib
 import os
 import sqlite3
 import requests
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+import pdf_generator # Ihr Modul
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, send_file, current_app
 from dotenv import load_dotenv, find_dotenv
-# Stelle sicher, dass ALLE benötigten Funktionen importiert werden
-from ad_utils import (
-    build_ou_tree, parse_exclude_ous, get_users_in_ou,
-    get_supervisors_in_ou, get_all_supervisors, get_ad_connection
-)
-from ldap3 import Server, Connection, ALL, SUBTREE
-from datetime import datetime
+from werkzeug.utils import secure_filename
+
+from ldap3 import Server, Connection, ALL, SUBTREE, BASE, LEVEL
+from ldap3.core.exceptions import LDAPException, LDAPBindError, LDAPSocketOpenError
+
+from datetime import datetime, date
 from email.mime.text import MIMEText
-import logging  # Importiere das logging-Modul
-import sys  # Importiere sys
-import ldap3.core.exceptions # Wird für spezifischere Fehlerbehandlung benötigt
-import re  # Importiere das Modul für reguläre Ausdrücke
+import logging
+import sys
+import re
+from functools import wraps
+
+from markupsafe import Markup, escape
 
 load_dotenv(find_dotenv())
 
+logging.basicConfig(
+    level=os.getenv("FLASK_LOG_LEVEL", "INFO").upper(),
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+import ad_utils
+
+# Schlüssel für Umgebungsvariablen der Gruppen
+ENV_MAIN_ACCESS_GROUP = "MAIN_ACCESS_GROUP"
+ENV_ADMIN_MAIN_GROUP = "AD_GROUP"
+ENV_SUPERVISOR_GROUP = "SUPERVISOR_GROUP"
+ENV_HR_GROUP = "HR_GROUP"
+ENV_BAUAMT_GROUP = "BAUAMT_GROUP"
+ENV_IT_GROUP = "IT_GROUP"
+ENV_OFFICE_GROUP = "OFFICE_GROUP"
+ENV_PRINT_GROUP = "PRINT_GROUP"
+ENV_RIS_GROUP = "RIS_GROUP"
+
+# --- BEGINN: Hilfsfunktionen & Decorator ---
+def nl2br_filter(s):
+    if not s: return ""
+    return Markup(re.sub(r'\r\n|\r|\n', '<br>\n', str(escape(s))))
+
+def format_datetime_filter(value, format_str='%d.%m.%Y %H:%M'):
+    if value is None or value == "": return ""
+    try:
+        if isinstance(value, str):
+            try: return datetime.strptime(value.split('.')[0], '%Y-%m-%d %H:%M:%S').strftime(format_str)
+            except ValueError:
+                try: return datetime.strptime(value, '%Y-%m-%dT%H:%M').strftime(format_str)
+                except ValueError: return datetime.strptime(value, '%Y-%m-%d').strftime('%d.%m.%Y')
+        elif isinstance(value, datetime): return value.strftime(format_str)
+        elif isinstance(value, date): return value.strftime('%d.%m.%Y')
+    except ValueError: return value
+    return value
+
+def get_hardware_details_for_display(request_item_dict):
+    details, item = [], dict(request_item_dict) if isinstance(request_item_dict, sqlite3.Row) else request_item_dict
+    hw_computer = item.get('hardware_computer', '')
+    # hardware_accessories und hardware_mobile sollten bereits Listen sein durch get_request_item_as_dict
+    accessories = item.get('hardware_accessories', [])
+    mobiles = item.get('hardware_mobile', [])
+    processed_accessories = set()
+
+    if hw_computer and hw_computer.lower() not in ['computer bereits vorhanden', '']:
+        details.append(f"Computer: {hw_computer}")
+        if hw_computer.lower() == 'laptop' and accessories and 'Dockingstation' in accessories:
+            other_laptop_acc = [acc for acc in accessories if acc and acc.lower() != 'dockingstation']
+            acc_text = "Dockingstation" + (", " + ', '.join(other_laptop_acc) if other_laptop_acc else "")
+            details.append(f"Zubehör (Laptop): {acc_text}")
+            processed_accessories.add('Dockingstation')
+            if other_laptop_acc: processed_accessories.update(filter(None, other_laptop_acc))
+
+    hw_monitor = item.get('hardware_monitor', '')
+    if hw_monitor and hw_monitor.lower() not in ['monitor(e) bereits vorhanden', '']:
+        details.append(f"Monitor: {hw_monitor}")
+
+    if accessories:
+        remaining_acc = [acc for acc in accessories if acc and acc not in processed_accessories]
+        if remaining_acc: details.append(f"Weiteres Zubehör: {', '.join(remaining_acc)}")
+
+    if mobiles:
+        filtered_mobiles = [m for m in mobiles if m]
+        if filtered_mobiles: details.append(f"Mobiles Gerät: {', '.join(filtered_mobiles)}")
+
+    if item.get('needs_fixed_phone'): details.append("Festarbeitsplatztelefon: Ja")
+
+    return "- " + "\n- ".join(details) if details else "Keine spezifische neue Hardware/Telefon angefordert oder alles als 'bereits vorhanden' markiert."
+
+def is_valid_email(email):
+    if not isinstance(email, str): return False
+    return EMAIL_REGEX.match(email) is not None
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def load_form_dependencies():
+    ou_tree_data, all_supervisors_data = [], []
+    try:
+        # Stellt sicher, dass AD_SEARCH_BASE definiert ist, bevor es verwendet wird
+        if AD_SEARCH_BASE:
+            ou_tree_data = ad_utils.build_ou_tree(AD_SEARCH_BASE)
+            all_supervisors_data = ad_utils.get_all_supervisors()
+        else:
+            logger.warning("AD_SEARCH_BASE nicht definiert. OU-Baum und Supervisoren können nicht geladen werden.")
+    except Exception as e:
+        logger.error(f"Fehler beim Laden der Formularabhängigkeiten: {e}", exc_info=True)
+        flash("Fehler beim Laden der Abteilungs- oder Vorgesetztendaten.", "danger")
+    return ou_tree_data, all_supervisors_data
+
+def get_request_item_as_dict(request_id):
+    conn_db = None
+    try:
+        conn_db = sqlite3.connect("db/onoffboarding.db"); conn_db.row_factory = sqlite3.Row; c = conn_db.cursor()
+        c.execute("SELECT * FROM requests WHERE id = ?", (request_id,)); row = c.fetchone()
+        if row:
+            item = dict(row)
+            item['hardware_accessories'] = [a.strip() for a in item.get('hardware_accessories','').split(',')] if item.get('hardware_accessories') else []
+            item['hardware_mobile'] = [m.strip() for m in item.get('hardware_mobile','').split(',')] if item.get('hardware_mobile') else []
+            return item
+    except Exception as e: logger.error(f"Fehler get_request_item_as_dict für ID {request_id}: {e}", exc_info=True)
+    finally:
+        if conn_db: conn_db.close()
+    return None
+
+def send_mail(to_address, subject, body_content, from_address=None, is_html=False):
+    actual_sender = from_address or SENDER
+    if not actual_sender or not is_valid_email(actual_sender):
+        logger.error(f"❌ Ungültige oder fehlende Absenderadresse: {actual_sender}")
+        raise ValueError("Ungültige oder fehlende Absenderadresse (SENDER) konfiguriert.")
+
+    final_recipient = None
+    if to_address and is_valid_email(to_address): final_recipient = to_address
+    elif MAIL_USER and is_valid_email(MAIL_USER):
+        final_recipient = MAIL_USER
+        subject = f"[Fallback an {MAIL_USER}] {subject}"
+        logger.warning(f"Ungültige primäre E-Mail-Adresse '{to_address}'. Sende an Fallback MAIL_USER: {MAIL_USER}")
+    else:
+        logger.error(f"❌ Weder primäre Adresse '{to_address}' noch Fallback MAIL_USER ('{MAIL_USER}') gültig/konfiguriert für Betreff: {subject}")
+        raise ValueError("Keine gültige Empfängeradresse für E-Mail gefunden.")
+
+    msg = MIMEText(body_content, 'html' if is_html else 'plain', 'utf-8')
+    msg['Subject'] = subject; msg['From'] = actual_sender; msg['To'] = final_recipient
+    try:
+        logger.info(f"📧 Sende E-Mail '{subject}' von '{actual_sender}' an '{final_recipient}'. HTML: {is_html}")
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp:
+            smtp.set_debuglevel(0)
+            smtp.sendmail(actual_sender, [final_recipient], msg.as_string())
+        logger.info(f"✅ E-Mail '{subject}' an {final_recipient} gesendet.")
+    except smtplib.SMTPException as e:
+        logger.error(f"❌ SMTP Fehler Senden an {final_recipient} für Betreff '{subject}': {e}", exc_info=True); raise
+    except Exception as e:
+        logger.error(f"❌ Unerwarteter Fehler Senden an {final_recipient} für Betreff '{subject}': {e}", exc_info=True); raise
+
+def send_approval_mail(to_address_supervisor, firstname, lastname, process_type, request_id):
+    subject = f"Genehmigung erforderlich: {process_type.capitalize()} für {lastname}, {firstname} (ID: {request_id})"
+    base = WEB_SERVER if WEB_SERVER and WEB_SERVER.startswith(('http://', 'https://')) else f"http://{WEB_SERVER or 'localhost:5000'}"
+    link = f"{base}/view/{request_id}"
+    body_content = f"""Sehr geehrte/r Vorgesetzte/r,
+ein neuer Antrag ({process_type}) für '{firstname} {lastname}' erfordert Ihre Genehmigung.
+Details und Genehmigungsoptionen finden Sie unter folgendem Link:
+{link}
+(Antrags-ID: {request_id})
+Mit freundlichen Grüßen,
+Ihr On-/Offboarding-System"""
+    send_mail(to_address_supervisor, subject, body_content)
+
+def update_request_status(request_id, new_status, expected_current_status=None):
+    conn_db = None; success = False
+    try:
+        conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
+        if expected_current_status:
+            c.execute("SELECT status FROM requests WHERE id = ?", (request_id,)); current_status_row = c.fetchone()
+            if not current_status_row:
+                logger.error(f"Antrag {request_id} nicht gefunden für Status-Update.")
+                flash(f"Antrag {request_id} nicht gefunden.", "danger")
+                return False
+            if current_status_row[0] != expected_current_status:
+                logger.warning(f"Status für Antrag {request_id} ist '{current_status_row[0]}', erwartet '{expected_current_status}'. Update zu '{new_status}' nicht durchgeführt.")
+                if new_status != current_status_row[0]: # Nur flashen, wenn es ein echter Konflikt ist
+                    flash(f"Aktion für Antrag {request_id} nicht möglich (Aktueller Status: {current_status_row[0]}, Erwartet: {expected_current_status}).", "warning")
+                return False
+        c.execute("UPDATE requests SET status = ? WHERE id = ?", (new_status, request_id))
+        if c.rowcount == 0 and not (expected_current_status and new_status == expected_current_status): # Kein Update, wenn Status schon der neue Status ist
+            logger.warning(f"Kein Datensatz mit ID {request_id} für Status-Update auf '{new_status}' gefunden/geändert oder Status war bereits '{new_status}'.")
+            if not (expected_current_status and new_status == expected_current_status): # Flash nur, wenn es nicht nur ein "Status ist schon richtig" Fall ist
+                 flash(f"Antrag {request_id} nicht gefunden oder Status bereits '{new_status}'.", "warning")
+            return False
+        conn_db.commit(); logger.info(f"DB Status Antrag {request_id} auf '{new_status}' aktualisiert."); success = True
+    except sqlite3.Error as e:
+        logger.error(f"❌ Konnte DB Status Antrag {request_id} nicht auf '{new_status}' setzen: {e}", exc_info=True)
+        flash("Datenbankfehler beim Aktualisieren des Antragsstatus.", "danger")
+    except Exception as e:
+        logger.error(f"❌ Unerwarteter Fehler Update DB Status Antrag {request_id} auf '{new_status}': {e}", exc_info=True)
+        flash("Allgemeiner Fehler beim Aktualisieren des Antragsstatus.", "danger")
+    finally:
+        if conn_db: conn_db.close()
+    return success
+
+def trigger_n8n_webhook(request_id):
+    logger.info(f"🚀 Trigger n8n Webhook für Antrag ID: {request_id}")
+    webhook_url = os.getenv("N8N_WEBHOOK_APPROVED")
+    if not webhook_url:
+        logger.error(f"❌ N8N_WEBHOOK_APPROVED nicht konfiguriert. Webhook Antrag {request_id} nicht gesendet.")
+        update_request_status(request_id, 'fehler_webhook_url') # Stiller Fehlerstatus
+        return
+
+    row_dict = get_request_item_as_dict(request_id)
+    if not row_dict:
+        logger.error(f"❌ Konnte Daten für Antrag {request_id} nicht aus DB laden für Webhook.")
+        return
+
+    referenceuser_dn = ""; ref_user_sam = row_dict.get("referenceuser")
+    if ref_user_sam:
+        ad_conn = None
+        try:
+            logger.info(f" LDAP Suche DN für Referenzuser '{ref_user_sam}' (Antrag {request_id})")
+            ad_conn = ad_utils.get_ad_connection()
+            user_details = ad_utils.get_user_details_by_samaccountname(ad_conn, ref_user_sam, attributes=['distinguishedName'])
+            if user_details and user_details.get('dn'):
+                referenceuser_dn = user_details['dn']
+                logger.info(f"✅ DN für Ref-User '{ref_user_sam}': {referenceuser_dn}")
+            else:
+                logger.warning(f"⚠️ Kein DN für Ref-User '{ref_user_sam}' (Antrag {request_id}) gefunden via ad_utils.")
+        except Exception as e:
+            logger.error(f"❌ Fehler Ref-User DN Lookup '{ref_user_sam}': {e}", exc_info=True)
+        finally:
+            if ad_conn and ad_conn.bound: ad_conn.unbind()
+
+    data_to_send = row_dict.copy()
+    for key in ['key_required', 'required_windows', 'hardware_required', 'email_account_required',
+                'needs_fixed_phone', 'needs_ris_access', 'needs_cipkom_access', 'needs_office_notification',
+                'workplace_needs_new_table', 'workplace_needs_new_chair', 'workplace_needs_monitor_arms',
+                'workplace_no_new_equipment']:
+        data_to_send[key] = bool(data_to_send.get(key))
+    data_to_send['referenceuser_dn'] = referenceuser_dn
+
+    try:
+        logger.info(f"➡️ Sende Webhook Antrag {request_id} an: {webhook_url} mit Status '{data_to_send['status']}'")
+        res = requests.post(webhook_url, json=data_to_send, headers={"Content-Type": "application/json"}, timeout=20)
+        res.raise_for_status()
+        logger.info(f"✅ Webhook erfolgreich Antrag {request_id}. Status: {res.status_code}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Fehler Senden Webhook (Request) Antrag {request_id} an {webhook_url}: {e}", exc_info=True)
+        update_request_status(request_id, 'fehler_webhook')
+    except Exception as e:
+        logger.error(f"❌ Unerwarteter Fehler Senden Webhook Antrag {request_id}: {e}", exc_info=True)
+        update_request_status(request_id, 'fehler_webhook_unbekannt')
+
+def check_all_subprocesses_done(request_item):
+    if not request_item: return False, ["Antrag nicht gefunden"]
+    pending_tasks, all_done = [], True
+    def add_pending(condition, task_name, log_msg):
+        nonlocal all_done
+        if condition:
+            pending_tasks.append(task_name); all_done = False; logger.debug(f"Pending (Antrag {request_item.get('id')}): {log_msg}")
+
+    add_pending(request_item.get('required_windows') and request_item.get('n8n_ad_creation_status') != 'success', "Windows Account Erstellung", "Windows Account")
+    add_pending(request_item.get('email_account_required') and not request_item.get('email_created_address'), "E-Mail Adresse Erfassung", "E-Mail Adresse")
+    add_pending(request_item.get('hardware_required') and not request_item.get('hw_status_setup_done_at'), "Hardware Setup (vollständig)", "Hardware Setup")
+    add_pending(request_item.get('needs_fixed_phone') and not request_item.get('phone_status_setup_at'), "Telefon Einrichtung", "Telefon Einrichtung")
+    add_pending(request_item.get('key_required') and not request_item.get('key_status_issued_at'), "Schlüsselausgabe", "Schlüsselausgabe")
+    add_pending(request_item.get('needs_ris_access') and not request_item.get('ris_access_status_granted_at'), "RIS Zugang", "RIS Zugang")
+    add_pending(request_item.get('needs_cipkom_access') and not request_item.get('cipkom_access_status_granted_at'), "CIPKOM Zugang", "CIPKOM Zugang")
+
+    if not request_item.get('workplace_no_new_equipment'):
+        add_pending(request_item.get('workplace_needs_new_table') and not request_item.get('workplace_table_setup_at'), "Bauamt: Neuer Tisch Aufbau", "Bauamt Tisch")
+        add_pending(request_item.get('workplace_needs_new_chair') and not request_item.get('workplace_chair_setup_at'), "Bauamt: Neuer Stuhl Aufbau", "Bauamt Stuhl")
+        add_pending(request_item.get('workplace_needs_monitor_arms') and not request_item.get('workplace_monitor_arms_setup_at'), "Bauamt: Monitorarme Montage", "Bauamt Monitorarme")
+
+    if request_item.get('process_type') == 'onboarding':
+        hr_tasks = [
+            (not request_item.get('hr_dienstvereinbarung_at'), "HR Dienstvereinbarung", "HR Dienstvereinbarung"),
+            (not request_item.get('hr_datenschutz_at'), "HR Datenschutzblatt", "HR Datenschutz"),
+            (not request_item.get('hr_dsgvo_informed_at'), "HR: DSGVO informiert", "HR DSGVO"),
+            (not request_item.get('hr_it_directive_at'), "HR: Dienstanweisung IT", "HR IT Dienstanweisung"),
+            (not request_item.get('hr_payroll_sheet_at'), "HR: Personaldatenblatt Abrechnung", "HR Personaldatenblatt"),
+            (not request_item.get('hr_security_guidelines_at'), "HR: Leitlinien Informationssicherheit", "HR Leitlinien InfoSi"),
+            (not request_item.get('aida_access_created_at'), "AIDA: Zugang erstellt", "AIDA Zugang"),
+            (not request_item.get('aida_key_registered_at'), "AIDA: Schlüssel aufgenommen", "AIDA Schlüssel")]
+        for condition, task_name, log_msg in hr_tasks: add_pending(condition, task_name, log_msg)
+
+    if request_item.get('needs_office_notification'):
+        office_tasks = [
+            (not request_item.get('office_outlook_contact_at'), "Vorzimmer: Outlook-Kontakt", "VZ Outlook"),
+            (not request_item.get('office_distribution_lists_at'), "Vorzimmer: Verteilerlisten", "VZ Verteiler"),
+            (not request_item.get('office_phone_list_at'), "Vorzimmer: Telefonliste", "VZ Telefonliste"),
+            (not request_item.get('office_birthday_calendar_at'), "Vorzimmer: Geburtstagskalender", "VZ Geburtstag"),
+            (not request_item.get('office_welcome_gift_at'), "Vorzimmer: Begrüßungsgeschenk", "VZ Geschenk"),
+            (not request_item.get('office_mayor_appt_confirmed_at'), "Vorzimmer: Termin Bürgermeister", "VZ Termin BM"),
+            (not request_item.get('office_business_cards_at'), "Vorzimmer: Visitenkarten", "VZ Visitenkarten"),
+            (not request_item.get('office_organigram_at'), "Vorzimmer: Organigramm", "VZ Organigramm"),
+            (not request_item.get('office_homepage_updated_at'), "Vorzimmer: Homepage Update", "VZ Homepage")]
+        for condition, task_name, log_msg in office_tasks: add_pending(condition, task_name, log_msg)
+
+    logger.info(f"Abschlussprüfung für Antrag {request_item.get('id')}: All done = {all_done}, Pending = {pending_tasks if pending_tasks else 'Keine'}")
+    return all_done, pending_tasks
+
+def require_ad_group(group_name_env_var_key_or_keys):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if "user" not in session:
+                flash("Bitte zuerst anmelden, um auf diese Seite zuzugreifen.", "warning")
+                return redirect(url_for("login", next=request.url))
+            current_user_sam = session["user"]
+            allowed = False
+            group_keys_to_check = group_name_env_var_key_or_keys if isinstance(group_name_env_var_key_or_keys, list) else [group_name_env_var_key_or_keys]
+            checked_group_cns_for_flash = []
+
+            for group_key in group_keys_to_check:
+                required_group_cn = os.getenv(group_key)
+                if not required_group_cn:
+                    logger.error(f"Env-Var '{group_key}' für Gruppe nicht gesetzt. Zugriff für User '{current_user_sam}' auf '{f.__name__}' verweigert.")
+                    continue
+                checked_group_cns_for_flash.append(required_group_cn)
+                try:
+                    if ad_utils.is_user_member_of_group_by_env_var(current_user_sam, group_key): # env_var_key übergeben
+                        allowed = True; logger.debug(f"User '{current_user_sam}' in Gruppe '{required_group_cn}' (via ENV {group_key}) für '{f.__name__}'."); break
+                except ValueError as ve: logger.error(f"Konfig-Fehler Gruppenprüfung '{required_group_cn}': {ve}")
+                except Exception as e_gc: logger.error(f"Fehler Gruppenprüfung '{required_group_cn}': {e_gc}", exc_info=True)
+
+            if not allowed:
+                groups_str = ", ".join(checked_group_cns_for_flash) or "erforderliche Gruppe(n)"
+                if not checked_group_cns_for_flash and any(not os.getenv(gk) for gk in group_keys_to_check):
+                    flash("Zugriff verweigert: Sicherheitskonfiguration unvollständig.", "danger")
+                else:
+                    flash(f"Zugriff verweigert. Erfordert Mitgliedschaft in: {groups_str}.", "danger")
+                logger.warning(f"User '{current_user_sam}' Zugriff auf '{f.__name__}' verweigert. Benötigt: {groups_str} (Keys: {group_keys_to_check}).")
+                return redirect(url_for("admin"))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", "secret123")
+app.jinja_env.globals['hasattr'] = hasattr # hasattr global verfügbar machen
+app.jinja_env.filters['nl2br'] = nl2br_filter
+app.jinja_env.filters['format_datetime'] = format_datetime_filter
+app.jinja_env.globals['datetime'] = datetime
+app.jinja_env.globals['date'] = date
+app.jinja_env.globals['get_hardware_details_for_display'] = get_hardware_details_for_display
 
-# Konfiguriere das Logging für Docker
-logging.basicConfig(
-    level=logging.INFO,  # Setze das Log-Level (z.B. DEBUG, INFO, WARNING, ERROR)
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout  # Leite das Logging nach stdout um
-)
-print("🚀 Starte app.py neu!")
+# Kontextprozessor für Umgebungsvariablen-Schlüssel in Templates
+@app.context_processor
+def utility_processor():
+    return dict(
+        is_user_in_group_for_template=lambda gk: ad_utils.is_user_member_of_group_by_env_var(session.get("user"), gk) if "user" in session else False,
+        ENV_MAIN_ACCESS_GROUP=ENV_MAIN_ACCESS_GROUP, ENV_ADMIN_MAIN_GROUP=ENV_ADMIN_MAIN_GROUP,
+        ENV_SUPERVISOR_GROUP=ENV_SUPERVISOR_GROUP, ENV_HR_GROUP=ENV_HR_GROUP,
+        ENV_BAUAMT_GROUP=ENV_BAUAMT_GROUP, ENV_IT_GROUP=ENV_IT_GROUP,
+        ENV_OFFICE_GROUP=ENV_OFFICE_GROUP, ENV_PRINT_GROUP=ENV_PRINT_GROUP, ENV_RIS_GROUP=ENV_RIS_GROUP
+    )
 
-# Konstanten für Umgebungsvariablen
+UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'webform/uploads')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024 # 16 MB
+ALLOWED_EXTENSIONS = {'pdf'}
+app_root_path_for_upload = os.path.dirname(os.path.abspath(__file__))
+concrete_upload_folder = os.path.join(app_root_path_for_upload, app.config['UPLOAD_FOLDER'])
+if not os.path.exists(concrete_upload_folder):
+    try: os.makedirs(concrete_upload_folder); logger.info(f"Upload-Ordner erstellt: {concrete_upload_folder}")
+    except OSError as e: logger.error(f"Fehler Erstellen Upload-Ordner {concrete_upload_folder}: {e}")
+
 AD_SERVER = os.getenv("AD_SERVER")
 AD_SEARCH_BASE = os.getenv("AD_SEARCH_BASE")
-AD_GROUP = os.getenv("AD_GROUP") # Admin Gruppe für Login
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "25"))
 SENDER = os.getenv("SENDER")
 WEB_SERVER = os.getenv("LOCALWEBSERVER")
-N8N_WEBHOOK_APPROVED = os.getenv("N8N_WEBHOOK_APPROVED", "http://onoffboarder-n8n-1:5678/webhook-test/onoffboarding-approved")
-# Name der AD-Gruppe, die Vorgesetzte enthält (aus .env geladen)
-SUPERVISOR_GROUP = os.getenv("SUPERVISOR_GROUP", "vorgesetzter")
-MAIL_USER = os.getenv("MAIL_USER")  # Fallback E-Mail Empfänger
-# Regulärer Ausdruck für die E-Mail-Validierung (einfach)
+N8N_WEBHOOK_APPROVED = os.getenv("N8N_WEBHOOK_APPROVED")
+N8N_WEBHOOK_CREATE_USER_ACTION = os.getenv("N8N_WEBHOOK_CREATE_USER_ACTION")
+N8N_FLASK_TOKEN = os.getenv("N8N_FLASK_TOKEN")
+MAIL_USER = os.getenv("MAIL_USER")
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
+# Routen Definitionen
+# (Hier folgen alle Ihre Routen, wie in Antwort #47 definiert, mit den @require_ad_group Decorators)
+# Die Implementierung der Routen selbst bleibt großteils gleich, nur die @require_ad_group(...) Zeilen werden angepasst/hinzugefügt.
 
-def is_valid_email(email):
-    """
-    Überprüft, ob eine E-Mail-Adresse gültig ist.
-
-    Args:
-        email (str): Die zu überprüfende E-Mail-Adresse.
-
-    Returns:
-        bool: True, wenn die E-Mail-Adresse gültig ist, False sonst.
-    """
-    if not isinstance(email, str):
-        return False
-    return EMAIL_REGEX.match(email) is not None
-
+@app.route("/dashboard") # NEUE Route für nicht-Admins
+@require_ad_group(ENV_MAIN_ACCESS_GROUP)
+def user_dashboard():
+    # Hier könnten z.B. nur die Anträge angezeigt werden, die der User selbst gestellt hat,
+    # oder eine andere für ihn relevante Übersicht.
+    # Für den Moment eine einfache Seite.
+    return render_template("user_dashboard.html", username=session.get("user"))
 
 @app.route("/", methods=["GET", "POST"])
+@require_ad_group(ENV_ADMIN_MAIN_GROUP)
 def form():
     today = datetime.today().strftime('%Y-%m-%d')
+    form_data_on_error = {}
     if request.method == "POST":
+        form_data_on_error = request.form.copy()
         lastname = request.form.get("lastname")
         firstname = request.form.get("firstname")
-        startdate = request.form.get("startdate") or datetime.today().strftime('%Y-%m-%d')
+        birthdate = request.form.get("birthdate")
+        job_title = request.form.get("job_title", "")
+        startdate = request.form.get("startdate") or today
         enddate = request.form.get("enddate")
         department = request.form.get("department")
         department_dn = request.form.get("department_dn")
-        supervisor = request.form.get("supervisor", "") # Holt die ausgewählte Supervisor E-Mail/DN
-        comments = request.form.get("comments", "")
-        hardware_computer = request.form.get("hardware_computer", "")
-        hardware_monitor = request.form.get("hardware_monitor", "")
-        hardware_accessories = request.form.getlist("hardware_accessories[]")
-        hardware_mobile = request.form.getlist("hardware_mobile[]")
-        referenceuser = request.form.get("referenceuser", "")
-        process_type = request.form.get("process_type", "onboarding")
-        status = "offen"
-        role = "user"
-        key_required = request.form.get("key_required") == "true"
-        required_windows = request.form.get("needs_windows_user") == "true"
-        hardware_required = request.form.get("needs_hardware") == "true"
-
-        # Validierung (Beispiel: Vorname/Nachname dürfen nicht leer sein, wenn Windows-Konto benötigt)
-        if required_windows and (not firstname or not lastname):
-             flash("Vor- und Nachname sind erforderlich, wenn ein Windows Benutzerkonto benötigt wird.", "danger")
-             # Lade Formulardaten erneut für die Anzeige
-             ou_tree_data, all_supervisors_data = load_form_dependencies()
-             return render_template("form.html", today=today, ou_tree=ou_tree_data, all_supervisors=all_supervisors_data, form_data=request.form) # Formdaten zurückgeben
-
-        # Validierung Vorgesetzter (wenn Windows benötigt)
-        if required_windows and not supervisor:
-             flash("Ein Vorgesetzter muss ausgewählt werden, wenn ein Windows Benutzerkonto benötigt wird.", "danger")
-             ou_tree_data, all_supervisors_data = load_form_dependencies()
-             return render_template("form.html", today=today, ou_tree=ou_tree_data, all_supervisors=all_supervisors_data, form_data=request.form)
-
-
-        conn = sqlite3.connect("db/onoffboarding.db")
-        c = conn.cursor()
-        # Spaltennamen explizit angeben für bessere Lesbarkeit und Wartbarkeit
-        sql_insert = '''INSERT INTO requests
-               (lastname, firstname, startdate, enddate, department, supervisor,
-                hardware_computer, hardware_monitor, hardware_accessories, hardware_mobile,
-                comments, referenceuser, process_type, status, role, department_dn,
-                key_required, required_windows, hardware_required)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
-        values = (
-            lastname, firstname, startdate, enddate, department, supervisor,
-            hardware_computer if hardware_required else "",
-            hardware_monitor if hardware_required else "",
-            ",".join(hardware_accessories) if hardware_accessories and hardware_required else "",
-            ",".join(hardware_mobile) if hardware_mobile else "", # Mobile Geräte unabhängig?
-            comments, referenceuser, process_type, status, role, department_dn,
-            key_required, required_windows, hardware_required
-        )
+        supervisor_sam = request.form.get("supervisor", "")
+        supervisor_email_for_mail = supervisor_sam
+        if supervisor_sam:
+            sup_ad_conn = None
+            try:
+                sup_ad_conn = ad_utils.get_ad_connection()
+                sup_details = ad_utils.get_user_details_by_samaccountname(sup_ad_conn, supervisor_sam, attributes=['mail'])
+                if sup_details and sup_details.get('mail'):
+                    supervisor_email_for_mail = sup_details.get('mail')
+                    logger.info(f"E-Mail für Supervisor '{supervisor_sam}' gefunden: {supervisor_email_for_mail}")
+                else:
+                    logger.warning(f"Keine E-Mail für Supervisor '{supervisor_sam}' im AD gefunden. Verwende '{supervisor_sam}' oder Fallback ({MAIL_USER}).")
+            except AttributeError as ae:
+                 logger.error(f"Funktion get_user_details_by_samaccountname nicht in ad_utils gefunden oder fehlerhaft: {ae}")
+            except Exception as e_sup_mail: logger.error(f"Fehler Supervisor E-Mail für '{supervisor_sam}': {e_sup_mail}")
+            finally:
+                if sup_ad_conn and sup_ad_conn.bound: sup_ad_conn.unbind()
+        comments = request.form.get("comments", ""); hardware_computer = request.form.get("hardware_computer", ""); hardware_monitor = request.form.get("hardware_monitor", "")
+        hardware_accessories = request.form.getlist("hardware_accessories[]"); hardware_mobile = request.form.getlist("hardware_mobile[]")
+        referenceuser = request.form.get("referenceuser", ""); process_type = request.form.get("process_type", "onboarding"); status = "offen"; role = "user"
+        key_required = request.form.get("key_required") == "true"; required_windows = request.form.get("needs_windows_user") == "true"
+        hardware_required = request.form.get("needs_hardware") == "true"; email_account_required = request.form.get("needs_email_account") == "true"
+        needs_fixed_phone = request.form.get("needs_fixed_phone") == "true"; needs_ris_access = request.form.get("needs_ris_access") == "true"
+        needs_cipkom_access = request.form.get("needs_cipkom_access") == "true"; other_software_notes = request.form.get("other_software_notes", "")
+        cipkom_reference_user = request.form.get("cipkom_reference_user", ""); room_number = request.form.get("room_number", "")
+        workplace_needs_new_table = request.form.get("workplace_needs_new_table") == "true"; workplace_needs_new_chair = request.form.get("workplace_needs_new_chair") == "true"
+        workplace_needs_monitor_arms = request.form.get("workplace_needs_monitor_arms") == "true"; workplace_no_new_equipment = request.form.get("workplace_no_new_equipment") == "true"
+        needs_office_notification = request.form.get("needs_office_notification") == "true"
+        if not firstname or not lastname:
+            flash("Vor- und Nachname sind Pflichtfelder.", "danger"); o,a = load_form_dependencies(); return render_template("form.html", today=today, ou_tree=o, all_supervisors=a, form_data=form_data_on_error)
+        if required_windows and not supervisor_sam:
+            flash("Vorgesetzter ist Pflichtfeld bei Windows Konto.", "danger"); o,a = load_form_dependencies(); return render_template("form.html", today=today, ou_tree=o, all_supervisors=a, form_data=form_data_on_error)
+        if required_windows and not department_dn:
+            flash("Abteilung ist Pflichtfeld bei Windows Konto.", "danger"); o,a = load_form_dependencies(); return render_template("form.html", today=today, ou_tree=o, all_supervisors=a, form_data=form_data_on_error)
+        conn_db = None; request_id = None
         try:
-            c.execute(sql_insert, values)
-            conn.commit()
-            request_id = c.lastrowid # Korrekte Methode, um die ID zu bekommen
-            conn.close()
-            logging.info(f"💾 Anfrage in Datenbank gespeichert mit ID: {request_id}")
+            conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
+            sql_insert = '''INSERT INTO requests (lastname, firstname, birthdate, job_title, startdate, enddate, department, supervisor, hardware_computer, hardware_monitor, hardware_accessories, hardware_mobile, comments, referenceuser, process_type, status, role, department_dn, key_required, required_windows, hardware_required, email_account_required, needs_fixed_phone, needs_ris_access, needs_cipkom_access, other_software_notes, cipkom_reference_user, room_number, workplace_needs_new_table, workplace_needs_new_chair, workplace_needs_monitor_arms, workplace_no_new_equipment, needs_office_notification) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+            values = (lastname, firstname, birthdate, job_title, startdate, enddate, department, supervisor_sam, hardware_computer if hardware_required else "", hardware_monitor if hardware_required else "", ",".join(hardware_accessories) if hardware_accessories and hardware_required else "", ",".join(hardware_mobile) if hardware_mobile else "", comments, referenceuser, process_type, status, role, department_dn, key_required, required_windows, hardware_required, email_account_required, needs_fixed_phone, needs_ris_access, needs_cipkom_access, other_software_notes, cipkom_reference_user, room_number, workplace_needs_new_table, workplace_needs_new_chair, workplace_needs_monitor_arms, workplace_no_new_equipment, needs_office_notification)
+            c.execute(sql_insert, values); conn_db.commit(); request_id = c.lastrowid
+            logger.info(f"Anfrage ID: {request_id} gespeichert. Status: {status}")
         except sqlite3.Error as e:
-            logging.error(f"❌ SQLite Fehler beim Speichern des Antrags: {e}")
-            flash(f"Fehler beim Speichern des Antrags in der Datenbank: {e}", "danger")
-            if conn: conn.close()
-            ou_tree_data, all_supervisors_data = load_form_dependencies()
-            return render_template("form.html", today=today, ou_tree=ou_tree_data, all_supervisors=all_supervisors_data, form_data=request.form)
-
-
-        # Bedingte Logik für E-Mail/Webhook basierend auf 'required_windows'
-        if required_windows:
-            # Fall A: Windows-Konto benötigt -> E-Mail senden
-            try:
-                # 'supervisor' Variable enthält hier die E-Mail oder den DN des Vorgesetzten
-                send_approval_mail(supervisor, firstname, lastname, process_type, request_id)
-                flash("Antrag gespeichert und zur Freigabe versendet.", "success")
-            except ValueError as e: # Fehler bei Adressvalidierung
-                 logging.error(f"Fehler beim Mailversand (Adresse) für Antrag {request_id}: {e}")
-                 flash(f"Antrag gespeichert, aber Fehler bei Genehmigungs-E-Mail: {e}. Bitte Admin kontaktieren.", "warning")
-                 # Optional: Status in DB auf Fehler setzen?
-            except Exception as e: # Andere Fehler (SMTP etc.)
-                logging.error(f"Fehler beim initialen Mailversand für Antrag {request_id}: {e}")
-                flash(f"Antrag gespeichert, aber Fehler beim Senden der Genehmigungs-E-Mail: {e}. Bitte Admin kontaktieren.", "warning")
-                # Optional: Status in DB auf Fehler setzen?
-        else:
-            # Fall B: Kein Windows-Konto benötigt -> Direkt Webhook auslösen
-            logging.info(f"ℹ️ Antrag {request_id}: E-Mail-Benachrichtigung übersprungen (kein Windows-Konto). Starte direkte Verarbeitung.")
-            try:
-                # Setze den Status direkt auf 'genehmigt'
-                conn = sqlite3.connect("db/onoffboarding.db")
-                c = conn.cursor()
-                c.execute("UPDATE requests SET status = 'genehmigt' WHERE id = ?", (request_id,))
-                conn.commit()
-                conn.close()
-                logging.info(f"✅ Antrag {request_id} automatisch genehmigt.")
-                # Löse den Webhook aus
-                trigger_n8n_webhook(request_id) # Diese Funktion sollte Fehler intern loggen/behandeln
-                flash("Antrag gespeichert und direkt an die Verarbeitung übergeben.", "success")
-            except sqlite3.Error as e:
-                logging.error(f"❌ SQLite Fehler beim automatischen Genehmigen von Antrag {request_id}: {e}")
-                flash(f"Antrag gespeichert, aber Fehler bei der Datenbankaktualisierung: {e}", "danger")
-                if conn: conn.close()
-            except Exception as e:
-                 logging.error(f"Fehler bei der direkten Verarbeitung/Webhook für Antrag {request_id}: {e}")
-                 flash(f"Antrag gespeichert, aber Fehler bei der direkten Verarbeitung: {e}", "danger")
-                 # Status ist hier noch 'offen', da Update fehlgeschlagen ist oder Webhook-Problem
-
-        return redirect(url_for("form"))
-        # Ende des POST-Blocks
-
-    # --- GET Request: Formular anzeigen ---
+            logger.error(f"SQLite Fehler beim Speichern: {e}", exc_info=True); flash("DB-Fehler.", "danger"); o,a = load_form_dependencies(); return render_template("form.html", today=today, ou_tree=o, all_supervisors=a, form_data=form_data_on_error)
+        finally:
+            if conn_db: conn_db.close()
+        if request_id:
+            if required_windows and supervisor_sam:
+                try: send_approval_mail(supervisor_email_for_mail, firstname, lastname, process_type, request_id); flash("Antrag gespeichert und zur Freigabe versendet.", "success")
+                except Exception as e: logger.error(f"Mailversand-Fehler Antrag {request_id} an '{supervisor_email_for_mail}': {e}", exc_info=True); flash(f"Antrag gespeichert, aber Fehler bei Genehmigungs-E-Mail.", "warning")
+            else:
+                logger.info(f"Antrag {request_id}: Keine Mail-Genehmigung nötig/möglich. Direkte Bearbeitung.")
+                if update_request_status(request_id, "in_bearbeitung", "offen"): trigger_n8n_webhook(request_id); flash("Antrag gespeichert und direkt zur Bearbeitung weitergeleitet.", "success")
+            return redirect(url_for("form"))
+        else: flash("Antrag konnte nicht erstellt werden.", "danger"); o,a = load_form_dependencies(); return render_template("form.html", today=today, ou_tree=o, all_supervisors=a, form_data=form_data_on_error)
     ou_tree_data, all_supervisors_data = load_form_dependencies()
-    return render_template("form.html", today=today, ou_tree=ou_tree_data, all_supervisors=all_supervisors_data)
-
-def load_form_dependencies():
-    """Lädt OU-Baum und globale Vorgesetztenliste für das Formular."""
-    ou_tree_data = []
-    all_supervisors_data = []
-    try:
-       exclude = parse_exclude_ous()
-       # Lade OU Baum - Fehler hier sollte abgefangen werden
-       try:
-           ou_tree_data = build_ou_tree(AD_SEARCH_BASE, exclude_paths=exclude)
-       except Exception as e_ou:
-           logging.error(f"Fehler beim Laden des OU-Baums: {e_ou}")
-           flash("Fehler beim Laden der Abteilungsstruktur.", "warning")
-
-       # Lade ALLE Supervisoren initial für den Fall, dass keine OU gewählt wird
-       # oder als Fallback, falls die OU-spezifische Suche fehlschlägt
-       try:
-           all_supervisors_data = get_all_supervisors()
-       except Exception as e_sup:
-            logging.error(f"Fehler beim Laden der globalen Vorgesetztenliste: {e_sup}")
-            flash("Fehler beim Laden der Vorgesetztenliste.", "warning")
-
-    except Exception as e:
-       # Allgemeiner Fehler (z.B. in parse_exclude_ous)
-       logging.error(f"Genereller Fehler beim Laden der Formularabhängigkeiten: {e}")
-       flash("Ein Fehler ist beim Laden der Formulardaten aufgetreten.", "danger")
-    return ou_tree_data, all_supervisors_data
-
+    return render_template("form.html", today=today, ou_tree=ou_tree_data, all_supervisors=all_supervisors_data, form_data={}) # Immer leeres form_data bei GET
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
+        logger.debug(f"🔑 Login Versuch für Benutzer: {username}")
 
-        logging.debug("🔑 Form-Login Versuch für Benutzer: %s", username)
-        logging.debug("AD_SERVER: %s", AD_SERVER)
-        logging.debug("AD_SEARCH_BASE: %s", AD_SEARCH_BASE)
-        logging.debug("AD_GROUP (Admin): %s", AD_GROUP)
+        # Umgebungsvariablen für Gruppen-CNs abrufen
+        main_access_group_env_key = ENV_MAIN_ACCESS_GROUP # Der Key für die .env-Variable
+        admin_specific_group_env_key = ENV_ADMIN_MAIN_GROUP # Der Key für die .env-Variable
 
+        main_access_group_name = os.getenv(main_access_group_env_key)
+        admin_specific_group_name = os.getenv(admin_specific_group_env_key)
 
-        if not AD_SERVER or not AD_SEARCH_BASE or not username or not password:
-            flash("⚠️ Fehlende Konfiguration oder Eingabefehler.", "warning")
+        # Konfiguration und Eingaben prüfen
+        required_configs = {
+            "AD_SERVER": AD_SERVER,
+            "AD_SEARCH_BASE": AD_SEARCH_BASE,
+            main_access_group_env_key: main_access_group_name, # Prüft, ob die Env-Var für die Hauptgruppe gesetzt ist
+            admin_specific_group_env_key: admin_specific_group_name # Prüft, ob die Env-Var für die Admin-Gruppe gesetzt ist
+        }
+        if not username or not password:
+            flash("Benutzername und Passwort sind erforderlich.", "danger")
             return render_template("login.html")
 
-        conn = None # Initialisiere conn hier
+        missing_env_vars = [k for k, v in required_configs.items() if not v]
+        if missing_env_vars:
+            logger.error(f"Login-Konfiguration unvollständig. Fehlende Umgebungsvariablen: {', '.join(missing_env_vars)}")
+            flash("⚠️ Login nicht möglich: Wichtige Systemkonfigurationen fehlen. Bitte Admin kontaktieren.", "danger")
+            return render_template("login.html")
+
+        ad_conn_login = None
         try:
-            server = Server(AD_SERVER, get_info=ALL)
-            domain_parts = [part.split('=')[1] for part in AD_SEARCH_BASE.split(',') if part.strip().startswith('DC=')]
-            domain = '.'.join(domain_parts)
+            server_uri = AD_SERVER
+            use_ssl = os.getenv("AD_USE_SSL", "false").lower() == "true"
+            prefix = "ldaps://" if use_ssl else "ldap://"
+            if not server_uri.lower().startswith(("ldap://", "ldaps://")):
+                server_uri = prefix + server_uri
+
+            server = Server(server_uri, get_info=ALL, use_ssl=use_ssl)
+
+            # UPN-Erstellung für den Bind-Versuch
+            dc_parts = [part.split('=')[1] for part in AD_SEARCH_BASE.split(',') if part.strip().upper().startswith('DC=')]
+            domain = '.'.join(dc_parts)
             user_principal_name = f"{username}@{domain}"
 
-            logging.debug(f"➡️ Versuch Bind mit UPN: {user_principal_name}")
-            conn = Connection(server, user=user_principal_name, password=password, authentication="SIMPLE", auto_bind=True)
-            logging.info(f"✅ Bind mit UPN für '{username}' erfolgreich.")
+            logger.debug(f"➡️ Versuch Bind mit UPN: {user_principal_name}")
+            # Verbindung mit den Benutzer-Credentials herstellen
+            ad_conn_login = Connection(server, user=user_principal_name, password=password, authentication="SIMPLE", auto_bind=True, raise_exceptions=True)
+            logger.info(f"✅ Bind mit UPN für '{user_principal_name}' erfolgreich.")
 
-            # Suche nach dem sAMAccountName des Benutzers (wird oft für die Session verwendet)
-            conn.search(
-                search_base=AD_SEARCH_BASE,
-                search_filter=f"(userPrincipalName={user_principal_name})",
-                search_scope=SUBTREE,
-                attributes=['distinguishedName', 'sAMAccountName']
-            )
+            # sAMAccountName und DN des Benutzers abrufen (mit der gerade etablierten Verbindung)
+            # Suche nach UPN oder sAMAccountName, um Flexibilität bei der Eingabe zu ermöglichen
+            ad_conn_login.search(search_base=AD_SEARCH_BASE,
+                                   search_filter=f"(|(userPrincipalName={user_principal_name})(sAMAccountName={username}))",
+                                   search_scope=SUBTREE,
+                                   attributes=['distinguishedName', 'sAMAccountName'])
 
-            if not conn.entries:
-                 # UPN nicht gefunden, könnte an Konfiguration liegen oder falsche Eingabe
-                 # Ein erneuter Versuch mit sAMAccountName ist hier nicht sinnvoll für den *Bind*
-                 logging.warning(f"⚠️ UPN '{user_principal_name}' nicht gefunden im AD.")
-                 flash("⚠️ Benutzer nicht gefunden oder UPN-Format inkorrekt.", "warning")
-                 if conn.bound: conn.unbind()
-                 return render_template("login.html")
-
-            user_entry_dn = conn.entries[0].distinguishedName.value
-            actual_sam_account_name = conn.entries[0].sAMAccountName.value if 'sAMAccountName' in conn.entries[0] else username
-            logging.debug(f"Benutzer DN: {user_entry_dn}")
-            logging.debug(f"Benutzer sAMAccountName: {actual_sam_account_name}")
-
-            # --- Prüfung auf Admin-Gruppenmitgliedschaft (AD_GROUP) ---
-            if not AD_GROUP:
-                logging.error("🚫 Admin-Gruppe (AD_GROUP) ist nicht in .env konfiguriert!")
-                flash("🚫 Admin-Konfiguration unvollständig.", "danger")
-                if conn.bound: conn.unbind()
+            if not ad_conn_login.entries:
+                logger.warning(f"⚠️ Keine AD-Einträge für '{username}' (UPN: '{user_principal_name}') nach erfolgreichem Bind gefunden. Dies sollte nicht passieren.")
+                flash("⚠️ Benutzerdetails nicht gefunden nach erfolgreicher Authentifizierung. Bitte Admin kontaktieren.", "warning")
+                # raise LDAPBindError ausgelöst von Connection(..., raise_exceptions=True) sollte dies eigentlich schon verhindern.
+                # Zur Sicherheit hier trotzdem behandeln.
                 return render_template("login.html")
 
-            # Finde zuerst den DN der Admin-Gruppe
-            conn.search(AD_SEARCH_BASE, f"(&(objectClass=group)(cn={AD_GROUP}))", attributes=['distinguishedName'])
-            if not conn.entries:
-                logging.error(f"🚫 Admin-Gruppe '{AD_GROUP}' nicht im AD gefunden!")
-                flash(f"🚫 Admin-Gruppe '{AD_GROUP}' nicht gefunden.", "danger")
-                if conn.bound: conn.unbind()
+            user_entry = ad_conn_login.entries[0]
+            # WICHTIGE KORREKTUR: Zuweisung aufteilen
+            actual_sam_account_name = getattr(user_entry.sAMAccountName, "value", username) # Fallback auf eingegebenen Username
+            user_entry_dn = user_entry.distinguishedName.value
+            logger.debug(f"Benutzer DN: {user_entry_dn}, sAMAccountName: {actual_sam_account_name}")
+
+            # Schritt 1: Prüfen, ob Benutzer Mitglied der Haupt-Zugriffsgruppe ist
+            # Für diese Prüfung verwenden wir die Funktion aus ad_utils, die den Service-Account nutzt.
+            if not ad_utils.is_user_member_of_group_by_env_var(actual_sam_account_name, ENV_MAIN_ACCESS_GROUP):
+                logger.warning(f"🚫 Benutzer '{actual_sam_account_name}' ist kein Mitglied der Hauptgruppe '{main_access_group_name}'. Login verweigert.")
+                flash(f"Zugriff verweigert. Sie sind nicht berechtigt, diese Anwendung zu nutzen.", "danger")
                 return render_template("login.html")
-            admin_group_dn = conn.entries[0].distinguishedName.value
-            logging.debug(f"DN der Admin-Gruppe '{AD_GROUP}': {admin_group_dn}")
+            logger.info(f"✅ Benutzer '{actual_sam_account_name}' ist Mitglied der Haupt-Zugriffsgruppe '{main_access_group_name}'.")
 
-            # Prüfe rekursive Mitgliedschaft des Benutzers in der Admin-Gruppe
-            is_admin = conn.search(
-                 search_base=user_entry_dn, # Suche beim User-Objekt
-                 search_filter=f"(memberOf:1.2.840.113556.1.4.1941:={admin_group_dn})",
-                 search_scope='base',
-                 attributes=['cn'] # Minimales Attribut anfordern
-            )
-            logging.debug(f"Prüfung auf Mitgliedschaft in '{AD_GROUP}' (rekursiv): {'Ja' if is_admin else 'Nein'}")
-
-            if is_admin:
-                session["user"] = actual_sam_account_name # sAMAccountName in Session speichern
-                session["user_dn"] = user_entry_dn # Optional: DN auch speichern
-                session["is_admin"] = True # Flag setzen
-                flash(f"✅ Willkommen, {actual_sam_account_name}!", "success")
-                conn.unbind() # Verbindung explizit schließen nach Erfolg
-                return redirect(url_for("admin")) # Weiterleitung zum Admin-Bereich
+            # Schritt 2: Prüfen, ob Benutzer Mitglied der spezifischen Admin-Gruppe ist
+            is_specific_admin = ad_utils.is_user_member_of_group_by_env_var(actual_sam_account_name, ENV_ADMIN_MAIN_GROUP)
+            session["is_admin"] = is_specific_admin
+            if is_specific_admin:
+                logger.info(f"✅ Benutzer '{actual_sam_account_name}' ist Mitglied der Admin-Gruppe '{admin_specific_group_name}'.")
             else:
-                flash("🚫 Sie haben keine Berechtigung für den Admin-Zugang.", "danger")
-                conn.unbind() # Verbindung schließen
-                return render_template("login.html")
+                logger.info(f"ℹ️ Benutzer '{actual_sam_account_name}' ist KEIN Mitglied der Admin-Gruppe '{admin_specific_group_name}'.")
 
-        except ldap3.core.exceptions.LDAPBindError:
-             # Passwort falsch oder Benutzer/UPN falsch formatiert
-             logging.warning(f"❌ LDAP Bind Fehler beim Login für '{username}'. Ungültige Anmeldedaten.")
-             flash("Fehler beim Login: Ungültiger Benutzername oder Passwort.", "danger")
-        except ldap3.core.exceptions.LDAPSocketOpenError as e:
-            logging.error(f"❌ LDAP Verbindungsproblem zum Server '{AD_SERVER}': {e}")
-            flash(f"Fehler beim Login: Keine Verbindung zum Verzeichnisdienst möglich.", "danger")
-        except ldap3.core.exceptions.LDAPError as e:
-            # Andere LDAP-Fehler (z.B. Suche fehlgeschlagen)
-            logging.error(f"❌ Allgemeiner LDAP Fehler beim Login für '{username}': {e}")
-            flash("Fehler beim Login: Ein Problem mit dem Verzeichnisdienst ist aufgetreten.", "danger")
+            # Session für erfolgreichen Login (Mitglied der Hauptgruppe) erstellen
+            session["user"] = actual_sam_account_name
+            session["user_dn"] = user_entry_dn # Kann nützlich sein für andere AD-Operationen
+
+            flash(f"✅ Willkommen, {actual_sam_account_name}!", "success")
+
+            # Weiterleitungslogik
+            next_url = request.args.get('next')
+            if next_url:
+                # Sicherheitscheck: Ist die `next_url` sicher und auf der eigenen Domain? (Optional, aber empfohlen)
+                # Hier eine einfache Prüfung, ob es zur Admin-Seite geht und der User kein Admin ist
+                if url_for('admin') in next_url and not session.get("is_admin"):
+                    logger.info(f"User '{actual_sam_account_name}' (kein Admin) versuchte via 'next' zu '{next_url}', wird zu '/dashboard' umgeleitet.")
+                    return redirect(url_for("user_dashboard"))
+                logger.info(f"Leite User '{actual_sam_account_name}' zu 'next' URL: {next_url}")
+                return redirect(next_url)
+
+            # Standard-Weiterleitung nach Login
+            if session.get("is_admin"):
+                return redirect(url_for("admin"))
+            else:
+                # Wenn User in MAIN_ACCESS_GROUP aber kein Admin ist, leite zu einem generischen Dashboard
+                return redirect(url_for("user_dashboard"))
+
+        except LDAPBindError:
+            logger.warning(f"❌ LDAP Bind Fehler für '{username}'. Ungültige Anmeldedaten oder UPN/Passwort-Kombination.")
+            flash("Login fehlgeschlagen: Benutzername oder Passwort ungültig.", "danger")
+        except LDAPSocketOpenError as e:
+            logger.error(f"❌ LDAP Verbindungsproblem Server '{AD_SERVER}': {e}", exc_info=True)
+            flash("Login fehlgeschlagen: Keine Verbindung zum Verzeichnisdienst.", "danger")
+        except ValueError as e: # Fängt ValueErrors von ad_utils (fehlende Konfig) oder eigener Logik
+            logger.error(f"❌ Konfigurationsfehler (ValueError) beim Login oder Gruppenprüfung: {e}", exc_info=True)
+            flash(f"Login fehlgeschlagen: {e}", "danger") # Zeige die spezifische Fehlermeldung aus ValueError
+        except LDAPException as e:
+            logger.error(f"❌ Allgemeiner LDAP Fehler Login '{username}': {e}", exc_info=True)
+            flash("Login fehlgeschlagen: Problem mit dem Verzeichnisdienst.", "danger")
         except Exception as e:
-            # Unerwartete Python-Fehler
-            logging.error(f"❌ Unerwarteter Fehler beim Login für '{username}': {e}", exc_info=True) # Traceback loggen
+            logger.error(f"❌ Unerwarteter Fehler Login '{username}': {e}", exc_info=True)
             flash("Ein unerwarteter interner Fehler ist aufgetreten.", "danger")
         finally:
-            # Stelle sicher, dass die Verbindung immer geschlossen wird, falls sie existiert und gebunden ist
-             if conn and conn.bound:
-                 try:
-                     conn.unbind()
-                     logging.debug("🔒 LDAP Verbindung nach Login-Versuch geschlossen.")
-                 except Exception as unbind_e:
-                     logging.error(f"Fehler beim Schließen der LDAP-Verbindung nach Login-Versuch: {unbind_e}")
+            if ad_conn_login and ad_conn_login.bound:
+                try:
+                    ad_conn_login.unbind()
+                    logger.debug("🔒 LDAP Verbindung (Login-User) geschlossen.")
+                except Exception as unbind_e:
+                    logger.error(f"Fehler beim Schließen der LDAP-Verbindung (Login-User): {unbind_e}")
+        # Wenn ein Fehler auftrat, wird das Login-Template erneut gerendert
+        return render_template("login.html")
 
-    # GET Request oder fehlgeschlagener POST
+    # Für GET Requests das Login-Template anzeigen
     return render_template("login.html")
-
 
 @app.route("/logout")
 def logout():
-    user = session.get('user', 'Unbekannt')
-    session.clear() # Alle Session-Daten löschen
-    flash("Sie wurden erfolgreich abgemeldet.", "info")
-    logging.info(f"👤 Benutzer '{user}' abgemeldet.")
+    user = session.pop('user', 'Unbekannt'); session.pop('user_dn', None); session.pop('is_admin', None)
+    flash("Sie wurden erfolgreich abgemeldet.", "info"); logger.info(f"ðŸ‘¤ Benutzer '{user}' abgemeldet.")
     return redirect(url_for("login"))
 
-
 @app.route("/admin")
+@require_ad_group(ENV_ADMIN_MAIN_GROUP)
 def admin():
-    # Strenge Prüfung: Nur eingeloggte User, die auch Admins sind
-    if "user" not in session or not session.get("is_admin"):
-        flash("Zugriff verweigert. Bitte als Administrator anmelden.", "warning")
-        return redirect(url_for("login"))
-
-    conn = sqlite3.connect("db/onoffboarding.db")
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    # Zeige nur offene Anträge im Haupt-Admin-Bereich
-    c.execute("SELECT * FROM requests WHERE status = 'offen' ORDER BY id DESC")
-    open_requests = c.fetchall()
-    conn.close()
-
-    processed_requests = []
-    for req in open_requests:
-        req_dict = dict(req)
-        # Konvertiere kommagetrennte Strings in Listen für die Anzeige
-        req_dict['hardware_accessories'] = req_dict['hardware_accessories'].split(',') if req_dict['hardware_accessories'] else []
-        req_dict['hardware_mobile'] = req_dict['hardware_mobile'].split(',') if req_dict['hardware_mobile'] else []
-        processed_requests.append(req_dict)
-
-    return render_template("admin.html", requests=processed_requests)
-
-
-@app.route("/ou_tree")
-def ou_tree():
-    # Zugriffsschutz: Nur für eingeloggte Benutzer
-    if "user" not in session:
-        return jsonify({"error": "Nicht authentifiziert"}), 401
+    conn_db = None
+    current_requests_raw = []
     try:
-        exclude = parse_exclude_ous()
-        tree = build_ou_tree(AD_SEARCH_BASE, exclude_paths=exclude)
-        return jsonify(tree)
-    except Exception as e:
-        logging.error(f"Fehler beim Erstellen des OU-Baums: {e}")
-        return jsonify({"error": "Konnte OU-Baum nicht laden"}), 500
-
-
-@app.route("/ou_users")
-def ou_users():
-    # Zugriffsschutz
-    if "user" not in session:
-        return jsonify({"error": "Nicht authentifiziert"}), 401
-    dn = request.args.get("dn")
-    if not dn:
-        return jsonify({"error": "Parameter 'dn' fehlt"}), 400
-    try:
-        users = get_users_in_ou(dn) # Aus ad_utils.py
-        return jsonify(users)
-    except Exception as e:
-        logging.error(f"Fehler beim Laden der Benutzer für OU '{dn}': {e}")
-        return jsonify({"error": "Konnte Benutzer nicht laden"}), 500
-
-# --- NEUE VERSION DER /supervisors ROUTE ---
-# In app.py -> innerhalb der /supervisors Route
-
-@app.route("/supervisors")
-def supervisors():
-    # Zugriffsschutz
-    if "user" not in session:
-        logging.warning("Zugriffsversuch auf /supervisors ohne Session.") # Logge den Versuch
-        return jsonify({"error": "Nicht authentifiziert"}), 401
-
-    logging.info("--- /supervisors Route aufgerufen ---") # Start der Funktion loggen
-    dn = request.args.get("dn")
-    logging.info(f"Empfangener DN: {dn}") # Geloggter DN
-
-    final_supervisor_list = []
-
-    if not SUPERVISOR_GROUP:
-        logging.error("SUPERVISOR_GROUP ist nicht konfiguriert!")
-        return jsonify({"error": "Vorgesetzten-Gruppe nicht konfiguriert."}), 500
-
-    try:
-        if dn:
-            logging.info(f"Versuche Vorgesetzte für spezifische OU: {dn}")
-            # --- HIER STARTET DER KRITISCHE TEIL ---
-            logging.debug("Rufe get_supervisors_in_ou auf...")
-            ou_specific_supervisors = get_supervisors_in_ou(dn) # <-- Mögliche Fehlerquelle 1
-            logging.debug(f"Ergebnis von get_supervisors_in_ou: {ou_specific_supervisors}") # Logge das Ergebnis
-
-            if ou_specific_supervisors:
-                logging.info(f"✅ {len(ou_specific_supervisors)} Vorgesetzte in OU '{dn}' gefunden.")
-                final_supervisor_list = ou_specific_supervisors
-            else:
-                logging.info(f"ℹ️ Keine Vorgesetzten in OU '{dn}'. Rufe get_all_supervisors (Fallback)...")
-                final_supervisor_list = get_all_supervisors() # <-- Mögliche Fehlerquelle 2
-                logging.debug(f"Ergebnis von get_all_supervisors (Fallback): {final_supervisor_list}") # Logge das Ergebnis
-        else:
-            logging.info("Keine spezifische OU angegeben. Rufe get_all_supervisors...")
-            final_supervisor_list = get_all_supervisors() # <-- Mögliche Fehlerquelle 3
-            logging.debug(f"Ergebnis von get_all_supervisors (ohne DN): {final_supervisor_list}") # Logge das Ergebnis
-
-        logging.info(f"Gebe {len(final_supervisor_list)} Vorgesetzte als JSON zurück.") # Loggen vor dem Return
-        return jsonify(final_supervisor_list)
-
-    except ldap3.core.exceptions.LDAPError as e:
-        # Logge spezifische LDAP Fehler detaillierter
-        logging.error(f"LDAP Fehler in /supervisors (DN: {dn}, Gruppe: '{SUPERVISOR_GROUP}'): {e}", exc_info=True) # Mit Traceback
-        return jsonify({"error": f"Verzeichnisdienstfehler: {e}"}), 500
-    except Exception as e:
-        # Fange alle anderen Fehler ab und logge sie!
-        logging.error(f"Unerwarteter Fehler in /supervisors (DN: {dn}, Gruppe: '{SUPERVISOR_GROUP}'): {e}", exc_info=True) # Mit Traceback!
-        # Gib eine generische Fehlermeldung zurück, aber logge den spezifischen Fehler
-        return jsonify({"error": "Ein interner Serverfehler ist aufgetreten."}), 500
-# --- ENDE DER NEUEN /supervisors ROUTE ---
-
-
-def send_approval_mail(to_address, firstname, lastname, process_type, request_id):
-    """
-    Sendet eine E-Mail an den Vorgesetzten zur Genehmigung.
-    Verwendet MAIL_USER als Fallback, wenn to_address ungültig ist.
-    Args:
-        to_address (str): E-Mail oder DN des Vorgesetzten aus dem Formular.
-        ... (andere Args) ...
-    Raises:
-        ValueError: Wenn keine gültige Empfängeradresse gefunden/konfiguriert wurde.
-        smtplib.SMTPException: Bei SMTP-Fehlern.
-        Exception: Bei anderen Fehlern.
-    """
-    subject = f"Genehmigung erforderlich: {process_type.capitalize()} für {lastname}, {firstname} (ID: {request_id})"
-    base_url = WEB_SERVER if WEB_SERVER and WEB_SERVER.startswith(('http://', 'https://')) else f"http://{WEB_SERVER}"
-    link = f"{base_url}/view/{request_id}" # Link zur Detailansicht
-
-    body = f"""Sehr geehrte/r Vorgesetzte/r,
-
-ein neuer Antrag ({process_type}) für '{firstname} {lastname}' erfordert Ihre Genehmigung.
-
-Details und Genehmigungsoptionen finden Sie unter folgendem Link:
-{link}
-
-(Antrags-ID: {request_id})
-
-Mit freundlichen Grüßen,
-Ihr On-/Offboarding-System
-"""
-
-    msg = MIMEText(body, 'plain', 'utf-8')
-    msg['Subject'] = subject
-    msg['From'] = SENDER
-
-    final_recipient = None
-    recipient_source = "unbekannt" # Für Logging
-
-    # 1. Prüfe Absender
-    if not SENDER or not is_valid_email(SENDER):
-        logging.error(f"❌ Ungültige oder fehlende Absenderadresse (SENDER): {SENDER}")
-        raise ValueError("Ungültige Absenderadresse konfiguriert.")
-
-    # 2. Prüfe primären Empfänger (Vorgesetzter aus Formular)
-    # Annahme: `to_address` könnte eine E-Mail oder ein DN sein.
-    # Wenn es ein DN ist, müssen wir die E-Mail noch auflösen.
-    # Einfache Annahme hier: Es ist bereits eine E-Mail.
-    # TODO: Erweitere dies ggf. um DN-zu-E-Mail-Auflösung via LDAP, falls 'supervisor' im Formular ein DN sein kann.
-    if to_address and is_valid_email(to_address):
-        final_recipient = to_address
-        recipient_source = "Vorgesetzter (Formular)"
-        logging.info(f"Primärer Empfänger (aus Formular) ist gültige E-Mail: {final_recipient}")
-    else:
-        logging.warning(f"⚠️ Primäre Empfängeradresse '{to_address}' ist ungültig oder fehlt. Prüfe Fallback MAIL_USER ('{MAIL_USER}').")
-        # 3. Prüfe Fallback Empfänger (MAIL_USER)
-        if MAIL_USER and is_valid_email(MAIL_USER):
-            final_recipient = MAIL_USER
-            recipient_source = "Fallback (MAIL_USER)"
-            logging.warning(f"⚠️ Sende E-Mail an Fallback-Adresse: {final_recipient}")
-            msg['Subject'] = f"[Fallback] {subject}" # Betreff anpassen
-        else:
-            logging.error(f"❌ Weder primäre Adresse ('{to_address}') noch Fallback MAIL_USER ('{MAIL_USER}') sind gültig/konfiguriert.")
-            raise ValueError("Keine gültige Empfängeradresse für Genehmigungs-E-Mail gefunden.")
-
-    msg['To'] = final_recipient
-
-    try:
-        logging.info(f"📧 Sende E-Mail von '{SENDER}' an '{final_recipient}' ({recipient_source}) für Antrag {request_id}.")
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as smtp: # Timeout hinzufügen
-            # Optional: Debugging, TLS, Login (siehe vorherige Versionen)
-            # smtp.set_debuglevel(1)
-            # if SMTP_USE_TLS: smtp.starttls() # Env Var hinzufügen
-            # if SMTP_USER and SMTP_PASSWORD: smtp.login(SMTP_USER, SMTP_PASSWORD) # Env Vars hinzufügen
-            smtp.sendmail(SENDER, [final_recipient], msg.as_string())
-        logging.info(f"✅ Genehmigungs-E-Mail für Antrag {request_id} an {final_recipient} gesendet.")
-    except smtplib.SMTPException as e:
-        logging.error(f"❌ SMTP Fehler beim Senden an {final_recipient} für Antrag {request_id}: {e}")
-        raise # Fehler weitergeben
-    except Exception as e:
-        logging.error(f"❌ Unerwarteter Fehler beim Senden an {final_recipient} für Antrag {request_id}: {e}", exc_info=True)
-        raise # Fehler weitergeben
-
-
-@app.route("/reject/<int:request_id>", methods=["POST"])
-def reject_request(request_id):
-    # Zugriffsschutz: Nur eingeloggte Admins oder berechtigte User dürfen ablehnen
-    # Hier vereinfacht: Nur Admins (gleiche Logik wie /approve)
-    if "user" not in session or not session.get("is_admin"):
-        flash("Zugriff verweigert. Nur Administratoren können Anträge ablehnen.", "warning")
-        return redirect(url_for("login"))
-
-    current_user = session['user']
-    logging.info(f"➡️ Ablehnungsversuch für Antrag ID: {request_id} durch Admin '{current_user}'")
-
-    try:
-        conn = sqlite3.connect("db/onoffboarding.db")
-        c = conn.cursor()
-        c.execute("SELECT status FROM requests WHERE id = ?", (request_id,))
-        result = c.fetchone()
-
-        if result and result[0] == 'offen':
-            # Status auf 'abgelehnt' setzen
-            c.execute("UPDATE requests SET status = 'abgelehnt' WHERE id = ?", (request_id,))
-            conn.commit()
-            flash(f"Antrag {request_id} wurde abgelehnt.", "info")
-            logging.info(f"🚫 Antrag {request_id} durch Admin '{current_user}' abgelehnt.")
-            # Optional: Benachrichtigung an Ersteller/Vorgesetzten?
-        elif result:
-            flash(f"Antrag {request_id} konnte nicht abgelehnt werden (Aktueller Status: {result[0]}).", "warning")
-            logging.warning(f"Ablehnung für Antrag {request_id} fehlgeschlagen, Status ist bereits '{result[0]}'.")
-        else:
-            flash(f"Antrag {request_id} nicht gefunden.", "danger")
-            logging.warning(f"Ablehnungsversuch für nicht existierenden Antrag ID: {request_id}")
-
-        conn.close()
+        conn_db = sqlite3.connect("db/onoffboarding.db")
+        conn_db.row_factory = sqlite3.Row
+        c = conn_db.cursor()
+        # Sortierung nach created_at, falls Spalte existiert, sonst nach ID
+        try:
+            c.execute("SELECT * FROM requests WHERE status NOT IN ('abgeschlossen', 'abgelehnt') ORDER BY created_at DESC, id DESC")
+        except sqlite3.OperationalError:
+            logger.warning("Spalte 'created_at' nicht in DB gefunden für Sortierung in /admin, sortiere nach ID.")
+            c.execute("SELECT * FROM requests WHERE status NOT IN ('abgeschlossen', 'abgelehnt') ORDER BY id DESC")
+        current_requests_raw = c.fetchall()
     except sqlite3.Error as e:
-        logging.error(f"❌ SQLite Fehler beim Ablehnen von Antrag {request_id}: {e}")
-        flash(f"Datenbankfehler beim Ablehnen des Antrags: {e}", "danger")
-        if conn: conn.close()
-    except Exception as e:
-        logging.error(f"❌ Allgemeiner Fehler beim Ablehnen von Antrag {request_id}: {e}", exc_info=True)
-        flash(f"Unerwarteter Fehler beim Ablehnen des Antrags.", "danger")
-
-    # Leite zum Admin-Bereich zurück
-    return redirect(url_for("admin"))
-
-
-@app.route("/view/<int:request_id>")
-def view_request(request_id):
-    """
-    Zeigt die Details eines bestimmten Antrags an.
-    Prüft, ob der aktuell eingeloggte Benutzer genehmigen darf.
-    """
-    logging.info(f"👀 Zeige Details für Antrag ID: {request_id}")
-
-    conn = sqlite3.connect("db/onoffboarding.db")
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    c.execute("SELECT * FROM requests WHERE id = ?", (request_id,))
-    request_data = c.fetchone()
-    conn.close()
-
-    if not request_data:
-        flash(f"Antrag {request_id} nicht gefunden.", "danger")
-        return redirect(url_for("admin"))
-
-    can_approve = False
-    current_user = session.get("user") # sAMAccountName des eingeloggten Benutzers
-    is_admin_session = session.get("is_admin", False) # Ist der User Admin laut Login?
-
-    # Genehmigung möglich, wenn:
-    # 1. Benutzer eingeloggt ist UND
-    # 2. Antrag noch 'offen' ist UND
-    # 3. Benutzer entweder Admin ist ODER Mitglied der SUPERVISOR_GROUP
-    if current_user and request_data['status'] == 'offen':
-        logging.debug(f"Prüfe Genehmigungsrecht für Antrag {request_id} durch Benutzer '{current_user}'. Status: {request_data['status']}")
-
-        if is_admin_session:
-             can_approve = True
-             logging.info(f"✅ Benutzer '{current_user}' ist Admin und darf genehmigen.")
-        elif SUPERVISOR_GROUP:
-            logging.debug(f"Prüfe Mitgliedschaft von '{current_user}' in Gruppe '{SUPERVISOR_GROUP}'")
-            # Prüfe Gruppenmitgliedschaft via LDAP
-            ad_conn = None
-            try:
-                ad_conn = get_ad_connection()
-                # Finde DN der SUPERVISOR_GROUP
-                ad_conn.search(AD_SEARCH_BASE, f"(&(objectClass=group)(cn={SUPERVISOR_GROUP}))", attributes=['distinguishedName'])
-                if ad_conn.entries:
-                    group_dn = ad_conn.entries[0].distinguishedName.value
-                    # Finde DN des aktuellen Benutzers
-                    ad_conn.search(AD_SEARCH_BASE, f"(sAMAccountName={current_user})", attributes=['distinguishedName'])
-                    if ad_conn.entries:
-                        user_dn = ad_conn.entries[0].distinguishedName.value
-                        # Prüfe rekursive Mitgliedschaft
-                        is_member = ad_conn.search(
-                            search_base=user_dn,
-                            search_filter=f"(memberOf:1.2.840.113556.1.4.1941:={group_dn})",
-                            search_scope='base', attributes=['cn']
-                        )
-                        if is_member:
-                            can_approve = True
-                            logging.info(f"✅ Benutzer '{current_user}' ist Mitglied von '{SUPERVISOR_GROUP}' und darf genehmigen.")
-                        else:
-                            logging.info(f"ℹ️ Benutzer '{current_user}' ist kein Mitglied von '{SUPERVISOR_GROUP}'.")
-                    else:
-                        logging.warning(f"⚠️ Konnte DN für Benutzer '{current_user}' nicht finden (für Gruppenprüfung).")
-                else:
-                    logging.warning(f"⚠️ Vorgesetzten-Gruppe '{SUPERVISOR_GROUP}' nicht im AD gefunden.")
-
-            except ldap3.core.exceptions.LDAPError as e:
-                logging.error(f"❌ LDAP-Fehler bei der Gruppenprüfung für '{current_user}' in '{SUPERVISOR_GROUP}': {e}")
-            except Exception as e:
-                logging.error(f"❌ Unerwarteter Fehler bei der Gruppenprüfung für '{current_user}': {e}", exc_info=True)
-            finally:
-                 if ad_conn and ad_conn.bound:
-                      try: ad_conn.unbind()
-                      except: pass
-        else:
-             logging.warning("Keine SUPERVISOR_GROUP konfiguriert, nur Admins können genehmigen.")
-
-    logging.info(f"Genehmigungsrecht für '{current_user}' bei Antrag {request_id}: {can_approve}")
-
-    # Bereite Daten für die Anzeige vor
-    request_dict = dict(request_data)
-    request_dict['hardware_accessories'] = request_dict['hardware_accessories'].split(',') if request_dict['hardware_accessories'] else []
-    request_dict['hardware_mobile'] = request_dict['hardware_mobile'].split(',') if request_dict['hardware_mobile'] else []
-
-    return render_template("view.html", request=request_dict, can_approve=can_approve)
-
-
-def trigger_n8n_webhook(request_id):
-    """
-    Ruft Daten ab und sendet sie an den N8N_WEBHOOK_APPROVED.
-    Behandelt Fehler intern und loggt sie.
-    """
-    logging.info(f"🚀 Trigger n8n Webhook für Antrag ID: {request_id}")
-    webhook_url = N8N_WEBHOOK_APPROVED
-    if not webhook_url:
-         logging.error(f"❌ N8N_WEBHOOK_APPROVED ist nicht konfiguriert. Webhook für Antrag {request_id} kann nicht gesendet werden.")
-         # Setze Status in DB auf Fehler, damit es nachverfolgt werden kann
-         try:
-             conn = sqlite3.connect("db/onoffboarding.db")
-             c = conn.cursor()
-             # Verwende spezifischen Status oder füge Kommentar hinzu
-             c.execute("UPDATE requests SET status = 'fehler_webhook_url' WHERE id = ?", (request_id,))
-             conn.commit()
-             conn.close()
-         except sqlite3.Error as db_err:
-             logging.error(f"❌ Konnte Status nicht auf 'fehler_webhook_url' setzen für Antrag {request_id}: {db_err}")
-         return # Beende Funktion
-
-    conn = None
-    row = None
-    try:
-        conn = sqlite3.connect("db/onoffboarding.db")
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM requests WHERE id = ?", (request_id,))
-        row = c.fetchone()
-        conn.close() # Schließe DB-Verbindung so früh wie möglich
-        conn = None # Setze auf None, um doppeltes Schließen im finally zu vermeiden
-
-        if not row:
-            logging.error(f"❌ Konnte Daten für Antrag {request_id} nicht aus DB abrufen für Webhook.")
-            # Hier ist der Status wahrscheinlich schon 'genehmigt', kein Update nötig.
-            return
-
-        logging.debug(f"ℹ️ Abgerufene DB-Daten für Webhook (Antrag {request_id}): {dict(row)}")
-
-        # Referenzbenutzer-DN auflösen (falls vorhanden)
-        referenceuser_dn = ""
-        ref_user_sam = row["referenceuser"]
-        if ref_user_sam:
-            ad_conn = None
-            try:
-                logging.info(f" LDAP Suche nach DN für Referenzbenutzer '{ref_user_sam}' (Antrag {request_id})")
-                ad_conn = get_ad_connection()
-                ad_conn.search(
-                    search_base=AD_SEARCH_BASE,
-                    search_filter=f"(sAMAccountName={ref_user_sam})",
-                    search_scope=SUBTREE,
-                    attributes=["distinguishedName"]
-                )
-                if ad_conn.entries:
-                    referenceuser_dn = ad_conn.entries[0]["distinguishedName"].value
-                    logging.info(f"✅ DN für Referenzbenutzer '{ref_user_sam}' gefunden: {referenceuser_dn}")
-                else:
-                    logging.warning(f"⚠️ Kein DN für Referenzbenutzer '{ref_user_sam}' gefunden (Antrag {request_id}).")
-            except ldap3.core.exceptions.LDAPError as e:
-                logging.error(f"❌ LDAP Fehler beim Referenceuser-DN-Lookup für '{ref_user_sam}': {e}")
-            except Exception as e:
-                logging.error(f"❌ Unerwarteter Fehler beim Referenceuser-DN-Lookup für '{ref_user_sam}': {e}", exc_info=True)
-            finally:
-                if ad_conn and ad_conn.bound:
-                    try: ad_conn.unbind()
-                    except: pass
-
-        # Daten für Webhook zusammenstellen
-        data = {
-            "id": row["id"], "firstname": row["firstname"], "lastname": row["lastname"],
-            "startdate": row["startdate"], "enddate": row["enddate"],
-            "department": row["department"], "department_dn": row["department_dn"],
-            "supervisor": row["supervisor"], # E-Mail/DN wie gespeichert
-            "hardware_computer": row["hardware_computer"], "hardware_monitor": row["hardware_monitor"],
-            "hardware_accessories": row["hardware_accessories"].split(',') if row["hardware_accessories"] else [],
-            "hardware_mobile": row["hardware_mobile"].split(',') if row["hardware_mobile"] else [],
-            "comments": row["comments"],
-            "referenceuser": ref_user_sam, "referenceuser_dn": referenceuser_dn,
-            "process_type": row["process_type"], "status": row["status"], # Status sollte 'genehmigt' sein
-            "key_required": bool(row["key_required"]),
-            "required_windows": bool(row["required_windows"]),
-            "hardware_required": bool(row["hardware_required"]),
-            "created_at": row["created_at"] # Zeitstempel hinzufügen
-        }
-
-        logging.info(f"➡️ Sende Webhook für Antrag {request_id} an: {webhook_url}")
-        logging.debug(f"Webhook Daten (Antrag {request_id}): {data}")
-        res = requests.post(webhook_url, json=data, headers={"Content-Type": "application/json"}, timeout=20) # Erhöhtes Timeout
-        res.raise_for_status() # Fehler bei 4xx/5xx
-
-        logging.info(f"✅ Webhook erfolgreich gesendet für Antrag {request_id}. Status: {res.status_code}")
-        # Optional: Status auf 'an_n8n_übergeben' setzen
-        # update_request_status(request_id, 'an_n8n_uebergeben')
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Fehler beim Senden des Webhooks (Request) für Antrag {request_id} an {webhook_url}: {e}")
-        update_request_status(request_id, 'fehler_webhook') # Setze Fehlerstatus
-    except sqlite3.Error as e:
-        logging.error(f"❌ SQLite Fehler beim Abrufen der Daten für Webhook (Antrag {request_id}): {e}")
-        # Status nicht ändern, da Problem beim Lesen war
-    except Exception as e:
-        logging.error(f"❌ Unerwarteter Fehler beim Senden des Webhooks für Antrag {request_id}: {e}", exc_info=True)
-        update_request_status(request_id, 'fehler_webhook_unbekannt') # Setze Fehlerstatus
+        logger.error(f"SQLite Fehler beim Laden aktueller Anträge: {e}", exc_info=True)
+        flash("Fehler beim Laden der Anträge.", "danger")
+        # current_requests_raw bleibt leer
     finally:
-        # Stelle sicher, dass die DB-Verbindung geschlossen wird, falls sie noch offen ist
-        if conn:
-            try: conn.close()
-            except: pass
+        if conn_db: conn_db.close()
 
-def update_request_status(request_id, new_status):
-    """Hilfsfunktion zum Aktualisieren des Status eines Antrags in der DB."""
-    conn = None
-    try:
-        conn = sqlite3.connect("db/onoffboarding.db")
-        c = conn.cursor()
-        c.execute("UPDATE requests SET status = ? WHERE id = ?", (new_status, request_id))
-        conn.commit()
-        logging.info(f"DB Status für Antrag {request_id} auf '{new_status}' aktualisiert.")
-    except sqlite3.Error as e:
-        logging.error(f"❌ Konnte DB Status für Antrag {request_id} nicht auf '{new_status}' setzen: {e}")
-    except Exception as e:
-         logging.error(f"❌ Unerwarteter Fehler beim Update des DB Status für Antrag {request_id} auf '{new_status}': {e}", exc_info=True)
-    finally:
-        if conn:
-            try: conn.close()
-            except: pass
+    current_requests = []
+    for req_raw in current_requests_raw: # req_raw ist ein sqlite3.Row Objekt
+        req_dict = dict(req_raw) # Konvertiere sqlite3.Row zu einem Python Dictionary
 
+        # Verarbeite hardware_accessories
+        acc_str = req_dict.get('hardware_accessories', '') # .get() ist jetzt sicher auf req_dict
+        req_dict['hardware_accessories'] = [a.strip() for a in acc_str.split(',')] if acc_str else []
 
-@app.route("/approve/<int:request_id>", methods=["POST"])
-def approve_request(request_id):
-    # Zugriffsschutz: Nur eingeloggte Admins oder berechtigte User (Vorgesetzte)
-    if "user" not in session:
-        flash("Zugriff verweigert. Bitte anmelden.", "warning")
-        return redirect(url_for("login"))
+        # Verarbeite hardware_mobile
+        mob_str = req_dict.get('hardware_mobile', '') # .get() ist jetzt sicher auf req_dict
+        req_dict['hardware_mobile'] = [m.strip() for m in mob_str.split(',')] if mob_str else []
 
-    # Hier sollte die Berechtigungsprüfung aus /view wiederholt oder übernommen werden.
-    # Vereinfacht: Wir nehmen an, der Klick kommt von einem berechtigten User aus /view.
-    # TODO: Füge hier eine robuste Berechtigungsprüfung hinzu, falls /approve direkt aufgerufen werden kann.
-    current_user = session['user']
-    logging.info(f"➡️ Genehmigungsversuch für Antrag ID: {request_id} durch Benutzer '{current_user}'")
+        current_requests.append(req_dict)
 
-    conn = None
-    try:
-        conn = sqlite3.connect("db/onoffboarding.db")
-        c = conn.cursor()
-        c.execute("SELECT status FROM requests WHERE id = ?", (request_id,))
-        result = c.fetchone()
-
-        if result and result[0] == 'offen':
-            # Antrag genehmigen
-            c.execute("UPDATE requests SET status = 'genehmigt' WHERE id = ?", (request_id,))
-            conn.commit()
-            logging.info(f"✅ Antrag {request_id} durch '{current_user}' genehmigt.")
-            conn.close() # Schließe DB Verbindung vor dem Webhook-Aufruf
-            conn = None
-
-            # Erst nach erfolgreicher DB-Änderung den Webhook auslösen
-            trigger_n8n_webhook(request_id)
-
-            flash(f"Antrag {request_id} genehmigt und zur Verarbeitung weitergeleitet.", "success")
-        elif result:
-            flash(f"Antrag {request_id} konnte nicht genehmigt werden (Status: {result[0]}).", "warning")
-            logging.warning(f"Genehmigung für Antrag {request_id} fehlgeschlagen, Status ist bereits '{result[0]}'.")
-        else:
-            flash(f"Antrag {request_id} nicht gefunden.", "danger")
-            logging.warning(f"Genehmigungsversuch für nicht existierenden Antrag ID: {request_id}")
-
-    except sqlite3.Error as e:
-        logging.error(f"❌ SQLite Fehler beim Genehmigen von Antrag {request_id}: {e}")
-        flash(f"Datenbankfehler beim Genehmigen des Antrags: {e}", "danger")
-    except Exception as e:
-        logging.error(f"❌ Allgemeiner Fehler beim Genehmigen von Antrag {request_id}: {e}", exc_info=True)
-        flash(f"Unerwarteter Fehler beim Genehmigen des Antrags.", "danger")
-    finally:
-        if conn: # Falls im Fehlerfall noch offen
-             try: conn.close()
-             except: pass
-
-    # Leite zum Admin-Dashboard zurück
-    return redirect(url_for("admin"))
-
+    return render_template("admin.html", requests=current_requests)
 
 @app.route("/archived")
+@require_ad_group(ENV_ADMIN_MAIN_GROUP)
 def archived():
-    # Zugriffsschutz
-    if "user" not in session or not session.get("is_admin"):
-         flash("Zugriff auf das Archiv verweigert.", "warning")
-         return redirect(url_for("login"))
+    conn_db = None
+    archived_requests_raw = []
+    try:
+        conn_db = sqlite3.connect("db/onoffboarding.db")
+        conn_db.row_factory = sqlite3.Row
+        c = conn_db.cursor()
+        c.execute("SELECT * FROM requests WHERE status IN ('abgeschlossen', 'abgelehnt') ORDER BY id DESC")
+        archived_requests_raw = c.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"SQLite Fehler Laden Archiv: {e}", exc_info=True)
+        flash("Fehler beim Laden des Archivs.", "danger")
+        # archived_requests_raw bleibt leer
+    finally:
+        if conn_db: conn_db.close()
 
-    conn = sqlite3.connect("db/onoffboarding.db")
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    # Zeige alle Anträge, die NICHT 'offen' sind
-    c.execute("SELECT * FROM requests WHERE status != 'offen' ORDER BY id DESC")
-    archived_requests = c.fetchall()
-    conn.close()
-
-    # Bereite Daten für die Anzeige vor
     processed_requests = []
-    for req in archived_requests:
-        req_dict = dict(req)
-        req_dict['hardware_accessories'] = req_dict['hardware_accessories'].split(',') if req_dict['hardware_accessories'] else []
-        req_dict['hardware_mobile'] = req_dict['hardware_mobile'].split(',') if req_dict['hardware_mobile'] else []
+    for req_raw in archived_requests_raw: # req_raw ist ein sqlite3.Row Objekt
+        req_dict = dict(req_raw) # Konvertiere sqlite3.Row zu einem Python Dictionary
+
+        # Verarbeite hardware_accessories
+        acc_str = req_dict.get('hardware_accessories', '') # .get() ist jetzt sicher auf req_dict
+        req_dict['hardware_accessories'] = [a.strip() for a in acc_str.split(',')] if acc_str else []
+
+        # Verarbeite hardware_mobile
+        mob_str = req_dict.get('hardware_mobile', '') # .get() ist jetzt sicher auf req_dict
+        req_dict['hardware_mobile'] = [m.strip() for m in mob_str.split(',')] if mob_str else []
+
         processed_requests.append(req_dict)
 
     return render_template("archived.html", requests=processed_requests)
 
+@app.route("/ou_tree")
+@require_ad_group(ENV_MAIN_ACCESS_GROUP)
+def ou_tree():
+    try: tree = ad_utils.build_ou_tree(AD_SEARCH_BASE); return jsonify(tree)
+    except Exception as e: logger.error(f"Fehler Erstellen OU-Baum: {e}", exc_info=True); return jsonify({"error": "Konnte OU-Baum nicht laden"}), 500
 
-# Initialisiere DB beim Start
+@app.route("/ou_users")
+@require_ad_group(ENV_MAIN_ACCESS_GROUP)
+def ou_users():
+    dn = request.args.get("dn")
+    if not dn: return jsonify({"error": "Parameter 'dn' fehlt"}), 400
+    try: users = ad_utils.get_users_in_ou(dn); return jsonify(users)
+    except Exception as e: logger.error(f"Fehler Laden Benutzer für OU '{dn}': {e}", exc_info=True); return jsonify({"error": "Konnte Benutzer nicht laden"}), 500
+
+@app.route("/supervisors")
+@require_ad_group(ENV_MAIN_ACCESS_GROUP)
+def supervisors():
+    logger.info(f"--- /supervisors Route aufgerufen ---"); dn = request.args.get("dn")
+    if not os.getenv(ENV_SUPERVISOR_GROUP): logger.error(f"{ENV_SUPERVISOR_GROUP} nicht konfiguriert!"); return jsonify({"error": "Vorgesetzten-Gruppe nicht konfiguriert."}), 500
+    try:
+        supervisor_list = ad_utils.get_supervisors_in_ou(dn) if dn else ad_utils.get_all_supervisors()
+        return jsonify(supervisor_list)
+    except Exception as e: logger.error(f"Fehler in /supervisors: {e}", exc_info=True); return jsonify({"error": "Interner Serverfehler."}), 500
+
+@app.route("/reject/<int:request_id>", methods=["POST"])
+@require_ad_group(ENV_ADMIN_MAIN_GROUP)
+def reject_request(request_id):
+    current_user = session['user']; logger.info(f"Ablehnung Antrag ID: {request_id} durch User '{current_user}'")
+    if not update_request_status(request_id, "abgelehnt", "offen"):
+        update_request_status(request_id, "abgelehnt")
+    flash(f"Antrag {request_id} als abgelehnt markiert.", "info")
+    return redirect(url_for("admin"))
+
+@app.route("/view/<int:request_id>")
+@require_ad_group(ENV_ADMIN_MAIN_GROUP)
+def view_request(request_id):
+    logger.info(f"Zeige Details für Antrag ID: {request_id}")
+    request_dict = get_request_item_as_dict(request_id)
+    if not request_dict: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    can_approve, all_subprocesses_completed, pending_subprocesses = False, False, []
+    current_user_sam = session.get("user")
+    if current_user_sam and request_dict.get('status') == 'offen':
+        is_supervisor = ad_utils.is_user_member_of_group_by_env_var(current_user_sam, ENV_SUPERVISOR_GROUP)
+        if is_supervisor or session.get("is_admin", False): can_approve = True
+        logger.info(f"User '{current_user_sam}' Genehmigungsrecht für Antrag {request_id}: {can_approve} (Supervisor: {is_supervisor}, Admin: {session.get('is_admin', False)}).")
+    if request_dict.get('status') == 'in_bearbeitung':
+        all_subprocesses_completed, pending_subprocesses = check_all_subprocesses_done(request_dict)
+        request_dict['pending_subprocesses'] = pending_subprocesses
+    return render_template("view.html", request=request_dict, can_approve=can_approve, all_subprocesses_completed=all_subprocesses_completed)
+
+@app.route("/approve/<int:request_id>", methods=["POST"])
+@require_ad_group([ENV_SUPERVISOR_GROUP, ENV_ADMIN_MAIN_GROUP])
+def approve_request(request_id):
+    current_user = session['user']
+    logger.info(f"Genehmigung Antrag ID: {request_id} durch User '{current_user}'")
+    if update_request_status(request_id, "in_bearbeitung", "offen"):
+        logger.info(f"Antrag {request_id} durch '{current_user}' genehmigt und auf 'in_bearbeitung' gesetzt.")
+        trigger_n8n_webhook(request_id); flash(f"Antrag {request_id} genehmigt und zur Bearbeitung weitergeleitet.", "success")
+    return redirect(url_for("admin"))
+
+@app.route("/manual_username/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("IT_GROUP")
+def manual_username_input(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    if request.method == "POST":
+        new_username = request.form.get("new_username", "").strip(); admin_user_performing_action = session.get("user")
+        if not new_username: flash("Bitte geben Sie einen neuen Benutzernamen ein.", "danger"); return render_template("manual_username.html", request_item=request_item)
+        payload_to_n8n = {
+            "usernameToCreate": new_username, "originalRequestId": request_item["id"],
+            "firstname": request_item["firstname"], "lastname": request_item["lastname"],
+            "referenceUserSAM": request_item["referenceuser"], "departmentDN": request_item["department_dn"],
+            "manualAdminOverride": admin_user_performing_action }
+        n8n_webhook_url = N8N_WEBHOOK_CREATE_USER_ACTION
+        if not n8n_webhook_url: logger.error("N8N_WEBHOOK_CREATE_USER_ACTION ist nicht konfiguriert!"); flash("Fehler: Workflow zur User-Erstellung (manuell) nicht konfiguriert.", "danger"); return render_template("manual_username.html", request_item=request_item)
+        try:
+            logger.info(f"Sende manuellen Usernamen '{new_username}' fÃ¼r Antrag {request_id} an n8n URL: {n8n_webhook_url}"); logger.debug(f"Payload an n8n (manuell): {payload_to_n8n}")
+            res = requests.post(n8n_webhook_url, json=payload_to_n8n, timeout=15); res.raise_for_status()
+            flash(f"Neuer Benutzername '{new_username}' wurde zur Verarbeitung an n8n Ã¼bergeben.", "success")
+            return redirect(url_for("view_request", request_id=request_id))
+        except requests.exceptions.RequestException as e: logger.error(f"Fehler beim Senden des manuellen Usernamens an n8n: {e}", exc_info=True); flash(f"Fehler bei der Ãœbergabe des neuen Usernamens an die Verarbeitung: {e}", "danger")
+        return render_template("manual_username.html", request_item=request_item)
+    return render_template("manual_username.html", request_item=request_item)
+
+@app.route("/webhook/n8n_update/ad_user_status/<int:request_id>", methods=["POST"])
+def webhook_n8n_update_ad_user_status(request_id):
+    # Token-Authentifizierung fÃ¼r den Webhook
+    # ... (bestehender Code)
+    if N8N_FLASK_TOKEN:
+        received_token = request.headers.get("X-N8N-Token")
+        if not received_token or received_token != N8N_FLASK_TOKEN: logger.warning(f"UngÃ¼ltiger/fehlender Token fÃ¼r n8n Update AD Status, Antrag {request_id}"); return jsonify({"status": "error", "message": "Invalid or missing token"}), 403
+    raw_data_received = request.get_data(as_text=True); logger.info(f"ðŸ“¢ N8N Update fÃ¼r AD User Status (Antrag {request_id}) ROHDATEN EMPFANGEN: {raw_data_received}")
+    data = request.json; logger.info(f"ðŸ“¢ N8N Update fÃ¼r AD User Status (Antrag {request_id}) GEPARST EMPFANGEN: {data}")
+    if not data or not isinstance(data, dict): logger.warning(f"Keine validen JSON-Objekt-Daten im n8n Update fÃ¼r Antrag {request_id} empfangen. Empfangen: {type(data)}"); return jsonify({"status": "error", "message": "No valid JSON object data received"}), 400
+    ad_creation_status = data.get("creation_status"); ad_username_created = data.get("ad_username"); ad_initial_password = data.get("initial_password")
+    ad_status_message = data.get("status_message", f"AD Prozess fÃ¼r User '{ad_username_created or 'N/A'}' von n8n mit Status '{ad_creation_status or 'N/A'}' gemeldet.")
+    conn_db = None
+    try:
+        conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
+        sql_update = """UPDATE requests SET n8n_ad_creation_status = ?, n8n_ad_username_created = ?, n8n_ad_initial_password = ?, n8n_ad_status_message = ? WHERE id = ?"""
+        c.execute(sql_update, (ad_creation_status, ad_username_created, ad_initial_password, ad_status_message, request_id)); conn_db.commit()
+        if c.rowcount > 0:
+            logger.info(f"Antrag {request_id}: AD User Status von n8n aktualisiert. Status: {ad_creation_status}, User: {ad_username_created}")
+            updated_request_item = get_request_item_as_dict(request_id)
+            if updated_request_item: check_all_subprocesses_done(updated_request_item)
+        else:
+            logger.warning(f"Antrag {request_id} nicht gefunden fÃ¼r n8n AD Status Update.")
+            return jsonify({"status": "error", "message": f"Request {request_id} not found"}), 404
+        return jsonify({"status": "success", "message": "AD user status updated"}), 200
+    except sqlite3.Error as e: logger.error(f"SQLite Fehler beim Aktualisieren des n8n AD Status fÃ¼r Antrag {request_id}: {e}", exc_info=True); return jsonify({"status": "error", "message": "Database error"}), 500
+    except Exception as e: logger.error(f"Allgemeiner Fehler beim Aktualisieren des n8n AD Status fÃ¼r Antrag {request_id}: {e}", exc_info=True); return jsonify({"status": "error", "message": "Internal server error"}), 500
+    finally:
+        if conn_db: conn_db.close()
+
+
+@app.route("/webhook/n8n/request_completed/<int:request_id>", methods=["POST"])
+def n8n_request_completed(request_id):
+    # Token-Authentifizierung
+    # ... (bestehender Code)
+    if N8N_FLASK_TOKEN:
+        received_token = request.headers.get("X-N8N-Token")
+        if not received_token or received_token != N8N_FLASK_TOKEN: logger.warning(f"UngÃ¼ltiger oder fehlender Token-Versuch fÃ¼r /webhook/n8n/request_completed/{request_id}"); return jsonify({"status": "error", "message": "Invalid or missing token"}), 403
+    logger.info(f"ðŸ“¢ N8N meldet Abschluss fÃ¼r Antrag ID: {request_id}")
+    if update_request_status(request_id, "abgeschlossen", expected_current_status="in_bearbeitung"):
+        logger.info(f"âœ… Antrag {request_id} von n8n als 'abgeschlossen' markiert.")
+        return jsonify({"status": "success", "message": f"Request {request_id} marked as completed"}), 200
+    else:
+        current_status_item = get_request_item_as_dict(request_id)
+        current_status = current_status_item.get('status') if current_status_item else "unbekannt"
+        logger.warning(f"Konnte Antrag {request_id} nicht von n8n als abgeschlossen markieren. Aktueller Status: '{current_status}', erwartet 'in_bearbeitung'.")
+        if current_status not in ["abgeschlossen", "abgelehnt"]:
+            if update_request_status(request_id, "abgeschlossen"):
+                logger.info(f"Antrag {request_id} wurde nun doch als 'abgeschlossen' markiert (Force).")
+                return jsonify({"status": "success", "message": f"Request {request_id} force-marked as completed"}), 200
+        return jsonify({"status": "info", "message": f"Could not mark request {request_id} as completed by n8n. Current status: {current_status}"}), 200
+
+@app.route("/update_hardware_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("IT_GROUP")
+def update_hardware_status(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    hardware_to_order_text = get_hardware_details_for_display(request_item)
+    can_update_phone_on_hw_page = request_item.get('needs_fixed_phone')
+    if request.method == "POST":
+        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        update_fields = {}; success_message = None; action_processed = False
+        if action == "ordered" and not request_item.get('hw_status_ordered_at'):
+            update_fields['hw_status_ordered_at'] = now_str; update_fields['hw_status_ordered_by'] = current_user; success_message = "Hardware als 'bestellt' markiert."; action_processed = True
+        elif action == "delivered" and request_item.get('hw_status_ordered_at') and not request_item.get('hw_status_delivered_at'):
+            update_fields['hw_status_delivered_at'] = now_str; update_fields['hw_status_delivered_by'] = current_user; success_message = "Hardware als 'geliefert' markiert."; action_processed = True
+        elif action == "installed" and request_item.get('hw_status_delivered_at') and not request_item.get('hw_status_installed_at'):
+            update_fields['hw_status_installed_at'] = now_str; update_fields['hw_status_installed_by'] = current_user; success_message = "Hardware als 'installiert' markiert."; action_processed = True
+        elif action == "setup_done" and request_item.get('hw_status_installed_at') and not request_item.get('hw_status_setup_done_at'):
+            update_fields['hw_status_setup_done_at'] = now_str; update_fields['hw_status_setup_done_by'] = current_user; success_message = "Hardware als 'aufgebaut/fertig' markiert."; action_processed = True
+        elif action == "phone_ordered" and can_update_phone_on_hw_page and not request_item.get('phone_status_ordered_at'):
+            update_fields['phone_status_ordered_at'] = now_str; update_fields['phone_status_ordered_by'] = current_user; success_message = "Festarbeitsplatztelefon als 'bestellt' markiert."; action_processed = True
+        elif action == "phone_setup_done" and can_update_phone_on_hw_page and request_item.get('phone_status_ordered_at') and not request_item.get('phone_status_setup_at'):
+            action_processed = True
+            assigned_phone_number = request.form.get("phone_number_assigned", "").strip()
+            if not assigned_phone_number: flash("Bitte geben Sie die zugewiesene Rufnummer ein.", "danger")
+            else:
+                update_fields['phone_status_setup_at'] = now_str; update_fields['phone_status_setup_by'] = current_user
+                update_fields['phone_number_assigned'] = assigned_phone_number
+                success_message = f"Festarbeitsplatztelefon als 'aufgebaut/installiert' mit Nr. {assigned_phone_number} markiert."
+        if not action_processed and action:
+            flash("UngÃ¼ltige Aktion oder falsche Reihenfolge fÃ¼r Hardware/Telefon-Status.", "warning")
+        elif update_fields and success_message:
+            conn_db_hw = None
+            try:
+                conn_db_hw = sqlite3.connect("db/onoffboarding.db"); c = conn_db_hw.cursor()
+                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
+                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
+                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_hw.commit()
+                if c.rowcount > 0 :
+                    flash(success_message, "success"); logger.info(f"Antrag {request_id}: Hardware/Telefon-Status '{action}' durch '{current_user}' gesetzt.")
+                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+                else: flash("Update nicht erfolgreich, kein Datensatz geÃ¤ndert.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("Datenbankfehler.", "danger")
+            finally:
+                if conn_db_hw: conn_db_hw.close()
+        return redirect(url_for('update_hardware_status', request_id=request_id))
+    return render_template("update_hardware_status.html", request_item=request_item, hardware_to_order_text=hardware_to_order_text, can_update_phone_on_hw_page=can_update_phone_on_hw_page)
+
+@app.route("/update_bauamt_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("BAUAMT_GROUP")
+def update_bauamt_status(request_id):
+    if request.method == "GET" and request.args.get('reset_workplace_selection') == 'true':
+        # ... (bestehender Code fÃ¼r reset)
+        conn_db = None
+        try:
+            conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
+            c.execute("""UPDATE requests SET
+                            workplace_needs_new_table = 0, workplace_needs_new_chair = 0,
+                            workplace_needs_monitor_arms = 0, workplace_no_new_equipment = 0,
+                            workplace_table_ordered_at = NULL, workplace_table_ordered_by = NULL,
+                            /* ... alle weiteren Reset-Felder ... */
+                         WHERE id = ?""", (request_id,))
+            conn_db.commit(); flash("Auswahl zurÃ¼ckgesetzt.", "info")
+        except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}"); flash("DB Fehler.", "danger")
+        finally:
+            if conn_db: conn_db.close()
+        return redirect(url_for('update_bauamt_status', request_id=request_id))
+
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    show_key_issue_button = False # ... (bestehende Logik) ...
+    if request_item.get('key_required') and request_item.get('key_status_prepared_at') and not request_item.get('key_status_issued_at'):
+        if request_item.get('startdate'):
+            try:
+                start_date_obj = datetime.strptime(request_item.get('startdate'), '%Y-%m-%d').date()
+                if start_date_obj <= date.today(): show_key_issue_button = True
+            except ValueError: logger.warning(f"UngÃ¼ltiges Startdatumformat fÃ¼r Antrag {request_id}: {request_item.get('startdate')}")
+
+    if request.method == "POST":
+        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        update_fields = {}; filename_to_save = None; success_message = None; action_processed = False
+        # ... (bestehende Action-Logik fÃ¼r Bauamt)
+        if action == "key_prepared" and request_item.get('key_required') and not request_item.get('key_status_prepared_at'):
+            update_fields['key_status_prepared_at'] = now_str; update_fields['key_status_prepared_by'] = current_user; success_message = "SchlÃ¼ssel als 'vorbereitet' markiert."; action_processed = True
+        elif action == "key_issued" and request_item.get('key_required') and request_item.get('key_status_prepared_at') and not request_item.get('key_status_issued_at') and show_key_issue_button:
+            action_processed = True
+            if 'protocol_pdf' not in request.files or request.files['protocol_pdf'].filename == '': flash('Keine Datei fÃ¼r das Protokoll ausgewÃ¤hlt!', 'warning')
+            else:
+                file = request.files['protocol_pdf']
+                if file and allowed_file(file.filename):
+                    original_filename = secure_filename(file.filename); timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")
+                    base, ext = os.path.splitext(original_filename); filename_to_save = f"req{request_id}_keyprot_{timestamp_str}{ext}"[:250]
+                    file.save(os.path.join(concrete_upload_folder, filename_to_save))
+                    update_fields['key_status_issued_at'] = now_str; update_fields['key_status_issued_by'] = current_user
+                    update_fields['key_issuance_protocol_filename'] = filename_to_save
+                    success_message = f"SchlÃ¼ssel als 'ausgegeben' markiert. Protokoll '{filename_to_save}' gespeichert."
+                else: flash('UngÃ¼ltiger Dateityp. Nur PDF erlaubt.', 'warning')
+        elif action == "update_room_number":
+            action_processed = True; new_room_number = request.form.get("room_number", "").strip()
+            if new_room_number != request_item.get("room_number"):
+                update_fields['room_number'] = new_room_number; success_message = f"Zimmernummer zu '{new_room_number}' aktualisiert."
+        elif action == "save_workplace_selection":
+            action_processed = True # ... (Logik wie vorher) ...
+            needs_table = request.form.get("workplace_needs_new_table") == "true"
+            needs_chair = request.form.get("workplace_needs_new_chair") == "true"
+            needs_arms = request.form.get("workplace_needs_monitor_arms") == "true"
+            no_equipment = request.form.get("workplace_no_new_equipment") == "true"
+            if no_equipment: needs_table = False; needs_chair = False; needs_arms = False
+            update_fields.update({'workplace_needs_new_table': needs_table, 'workplace_needs_new_chair': needs_chair, 'workplace_needs_monitor_arms': needs_arms, 'workplace_no_new_equipment': no_equipment})
+            success_message = "Auswahl fÃ¼r Arbeitsplatzausstattung gespeichert."
+            # Reset logic...
+        # ... weitere elif fÃ¼r workplace_table_ordered etc. ...
+
+        if not action_processed and action : flash("UngÃ¼ltige Aktion oder falsche Reihenfolge fÃ¼r Bauamt-Status.", "warning")
+        elif update_fields and success_message:
+            conn_db_bauamt = None
+            try:
+                conn_db_bauamt = sqlite3.connect("db/onoffboarding.db"); c = conn_db_bauamt.cursor()
+                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
+                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
+                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_bauamt.commit()
+                if c.rowcount > 0:
+                    flash(success_message, "success"); logger.info(f"Antrag {request_id}: Bauamt-Status '{action}' durch '{current_user}' gesetzt.")
+                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+                else: flash("Update nicht erfolgreich.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
+            finally:
+                if conn_db_bauamt: conn_db_bauamt.close()
+        return redirect(url_for('update_bauamt_status', request_id=request_id))
+    return render_template("update_bauamt_status.html", request_item=request_item, show_key_issue_button=show_key_issue_button)
+
+
+@app.route('/uploads/<path:filename>')
+@require_ad_group("AD_GROUP") # Oder eine spezifischere Gruppe, falls nicht alle Admins alle Dateien sehen sollen
+def uploaded_file(filename):
+    directory = concrete_upload_folder
+    try:
+        logger.debug(f"Versuche Datei '{filename}' aus Verzeichnis '{directory}' zu senden.")
+        return send_from_directory(directory, filename, as_attachment=True) # as_attachment=True fÃ¼r Download
+    except FileNotFoundError:
+        logger.error(f"Datei nicht gefunden fÃ¼r Download: {filename} in {directory}"); flash("Datei nicht gefunden.", "danger")
+        return redirect(request.referrer or url_for("admin"))
+
+
+@app.route("/update_email_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("IT_GROUP")
+def update_email_status(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    if not request_item.get('email_account_required'): flash(f"FÃ¼r Antrag {request_id} wurde kein E-Mail Account angefordert.", "info")
+    if request.method == "POST":
+        created_email_address = request.form.get("created_email_address", "").strip()
+        current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if not created_email_address: flash("Bitte geben Sie die erstellte E-Mail-Adresse ein.", "danger")
+        elif not is_valid_email(created_email_address): flash("Die eingegebene E-Mail-Adresse ist ungÃ¼ltig.", "danger")
+        else:
+            conn_db = None
+            try:
+                conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
+                sql_update = """UPDATE requests SET email_created_address = ?, email_creation_confirmed_at = ?, email_creation_confirmed_by = ?, n8n_email_status_message = ? WHERE id = ?"""
+                status_msg = f"E-Mail Konto '{created_email_address}' erfasst."
+                c.execute(sql_update, (created_email_address, now_str, current_user, status_msg, request_id)); conn_db.commit()
+                if c.rowcount > 0:
+                    flash(f"E-Mail-Adresse '{created_email_address}' fÃ¼r Antrag {request_id} erfolgreich gespeichert.", "success")
+                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+                else: flash("Update nicht erfolgreich.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
+            finally:
+                if conn_db: conn_db.close()
+            return redirect(url_for('update_email_status', request_id=request_id))
+    return render_template("update_email_status.html", request_item=request_item)
+
+
+@app.route("/update_software_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("IT_GROUP")
+def update_software_status(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    can_update_ris = request_item.get('needs_ris_access'); can_update_cipkom = request_item.get('needs_cipkom_access')
+    if request.method == "POST":
+        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        update_fields = {}; success_message = None; action_processed = False
+        if action == "ris_granted" and can_update_ris and not request_item.get('ris_access_status_granted_at'):
+            update_fields['ris_access_status_granted_at'] = now_str; update_fields['ris_access_status_granted_by'] = current_user; success_message = "RIS Zugang als 'erteilt' markiert."; action_processed = True
+        elif action == "cipkom_granted" and can_update_cipkom and not request_item.get('cipkom_access_status_granted_at'):
+            update_fields['cipkom_access_status_granted_at'] = now_str; update_fields['cipkom_access_status_granted_by'] = current_user; success_message = "CIPKOM Zugang als 'erteilt' markiert."; action_processed = True
+        if not action_processed and action: flash("UngÃ¼ltige Software-Aktion oder Status bereits gesetzt/Anforderung nicht vorhanden.", "warning")
+        elif update_fields and success_message:
+            conn_db_sw = None
+            try:
+                conn_db_sw = sqlite3.connect("db/onoffboarding.db"); c = conn_db_sw.cursor()
+                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
+                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
+                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_sw.commit()
+                if c.rowcount > 0:
+                    flash(success_message, "success");
+                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+                else: flash("Update nicht erfolgreich.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
+            finally:
+                if conn_db_sw: conn_db_sw.close()
+        return redirect(url_for('update_software_status', request_id=request_id))
+    return render_template("update_software_status.html", request_item=request_item, can_update_ris=can_update_ris, can_update_cipkom=can_update_cipkom)
+
+
+@app.route("/hr_update_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group("HR_GROUP")
+def hr_update_status(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+    if request.method == "POST":
+        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        update_fields = {}; success_message = None; action_processed = False
+        # ... (bestehende Logik fÃ¼r HR Actions)
+        if action == "dienstvereinbarung_issued" and not request_item.get('hr_dienstvereinbarung_at'):
+            update_fields['hr_dienstvereinbarung_at'] = now_str; update_fields['hr_dienstvereinbarung_by'] = current_user; success_message = "Dienstvereinbarung als herausgegeben markiert."; action_processed = True
+        elif action == "datenschutz_issued" and not request_item.get('hr_datenschutz_at'):
+            update_fields['hr_datenschutz_at'] = now_str; update_fields['hr_datenschutz_by'] = current_user; success_message = "Datenschutzblatt als herausgegeben markiert."; action_processed = True
+        # ... usw. fÃ¼r alle HR Actions ...
+        elif action == "aida_key_registered" and not request_item.get('aida_key_registered_at'):
+            update_fields['aida_key_registered_at'] = now_str; update_fields['aida_key_registered_by'] = current_user; success_message = "SchlÃ¼ssel in AIDA als aufgenommen markiert."; action_processed = True
+
+        if not action_processed and action: flash("UngÃ¼ltige Aktion oder Status bereits gesetzt fÃ¼r HR/AIDA.", "warning")
+        elif update_fields and success_message:
+            # ... (DB Update Logik)
+            conn_db_hr = None
+            try:
+                conn_db_hr = sqlite3.connect("db/onoffboarding.db"); c = conn_db_hr.cursor()
+                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
+                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
+                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_hr.commit()
+                if c.rowcount > 0:
+                    flash(success_message, "success")
+                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+                else: flash("Update nicht erfolgreich.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
+            finally:
+                if conn_db_hr: conn_db_hr.close()
+        return redirect(url_for('hr_update_status', request_id=request_id))
+    return render_template("hr_update_status.html", request_item=request_item)
+
+
+#@app.route("/update_office_status/<int:request_id>", methods=["GET", "POST"])
+#@require_ad_group("OFFICE_GROUP")
+#def update_office_status(request_id):
+#    request_item = get_request_item_as_dict(request_id)
+#    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+#    if request.method == "POST":
+#        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+#        update_fields = {}; success_message = None; action_processed = False
+#        # ... (bestehende Logik fÃ¼r Office Actions)
+#        if action == "office_outlook_contact_done" and not request_item.get('office_outlook_contact_at'):
+#            update_fields['office_outlook_contact_at'] = now_str; update_fields['office_outlook_contact_by'] = current_user; success_message = "Outlook-Kontakt als angelegt markiert."; action_processed = True
+#        # ... usw. fÃ¼r alle Office Actions ...
+#        elif action == "office_homepage_update_done" and not request_item.get('office_homepage_updated_at'):
+#            update_fields['office_homepage_updated_at'] = now_str; update_fields['office_homepage_updated_by'] = current_user; success_message = "Ã„nderungen Homepage als durchgefÃ¼hrt markiert."; action_processed = True
+#
+#        if not action_processed and action: flash("UngÃ¼ltige Aktion oder Status bereits gesetzt fÃ¼r Vorzimmer-Aufgabe.", "warning")
+#        elif update_fields and success_message:
+#            # ... (DB Update Logik)
+#            conn_db_office = None
+#            try:
+#                conn_db_office = sqlite3.connect("db/onoffboarding.db"); c = conn_db_office.cursor()
+#                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
+#                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
+#                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_office.commit()
+#                if c.rowcount > 0:
+#                    flash(success_message, "success")
+#                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
+#                else: flash("Update nicht erfolgreich.", "warning")
+#            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
+#            finally:
+#                if conn_db_office: conn_db_office.close()
+#        return redirect(url_for('update_office_status', request_id=request_id))
+#    return render_template("update_office_status.html", request_item=request_item)
+
+@app.route("/update_office_status/<int:request_id>", methods=["GET", "POST"])
+@require_ad_group(ENV_OFFICE_GROUP) # Stellt sicher, dass nur berechtigte User zugreifen
+def update_office_status(request_id):
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item:
+        flash(f"Antrag {request_id} nicht gefunden.", "danger")
+        return redirect(url_for("admin"))
+
+    if request.method == "POST":
+        action = request.form.get("action")
+        current_user = session.get("user", "System")
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        update_fields = {}
+        success_message = None
+        action_processed = False # Wird auf True gesetzt, wenn eine gültige, offene Aufgabe gefunden wird
+
+        logger.debug(f"POST-Request für /update_office_status/{request_id} mit Action: '{action}'")
+
+        office_tasks_actions = {
+            "office_outlook_contact_done": ('office_outlook_contact_at', 'office_outlook_contact_by', "Outlook-Kontakt als angelegt markiert."),
+            "office_distribution_lists_done": ('office_distribution_lists_at', 'office_distribution_lists_by', "Verteilerlisten als aktualisiert markiert."),
+            "office_phone_list_done": ('office_phone_list_at', 'office_phone_list_by', "Telefonliste als ergänzt markiert."),
+            "office_birthday_calendar_done": ('office_birthday_calendar_at', 'office_birthday_calendar_by', "Geburtstagskalender als ergänzt markiert."),
+            "office_welcome_gift_done": ('office_welcome_gift_at', 'office_welcome_gift_by', "Begrüßungsgeschenk als bereit markiert."),
+            "office_business_cards_done": ('office_business_cards_at', 'office_business_cards_by', "Visitenkarten als bestellt markiert."),
+            "office_organigram_done": ('office_organigram_at', 'office_organigram_by', "Organigramm als ergänzt markiert."),
+            "office_homepage_update_done": ('office_homepage_updated_at', 'office_homepage_updated_by', "Änderungen Homepage als durchgeführt markiert.")
+        }
+
+        if action in office_tasks_actions:
+            db_field_at = office_tasks_actions[action][0]
+            task_already_done_value = request_item.get(db_field_at)
+
+            logger.debug(f"Prüfe Aufgabe: Action='{action}', DB-Feld='{db_field_at}', Wert in DB='{task_already_done_value}' (Typ: {type(task_already_done_value)})")
+
+            if not task_already_done_value: # Prüft auf None oder leeren String (beides "falsy")
+                at_field, by_field, msg = office_tasks_actions[action]
+                update_fields[at_field] = now_str
+                update_fields[by_field] = current_user
+                success_message = msg
+                action_processed = True
+                logger.info(f"Aktion '{action}' für Antrag {request_id} wird verarbeitet.")
+            else:
+                logger.warning(f"Aktion '{action}' für Antrag {request_id} nicht verarbeitet, da Aufgabe '{db_field_at}' bereits erledigt ist (Wert: '{task_already_done_value}').")
+
+        elif action == "mayor_appointment_set":
+            mayor_appt_date_str = request.form.get("mayor_appt_date")
+            if not mayor_appt_date_str:
+                flash("Bitte geben Sie Datum und Uhrzeit für den Bürgermeistertermin ein.", "danger")
+                action_processed = False # Wichtig: action_processed explizit auf False setzen bei Fehler
+            else:
+                try:
+                    dt_obj = datetime.strptime(mayor_appt_date_str, '%Y-%m-%dT%H:%M')
+                    update_fields['office_mayor_appt_date'] = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+                    update_fields['office_mayor_appt_confirmed_at'] = now_str
+                    update_fields['office_mayor_appt_confirmed_by'] = current_user
+                    success_message = f"Bürgermeistertermin für den {dt_obj.strftime('%d.%m.%Y um %H:%M Uhr')} bestätigt/aktualisiert."
+                    action_processed = True # Hier auf True setzen, da Aktion gültig ist
+                    logger.info(f"Aktion 'mayor_appointment_set' für Antrag {request_id} wird verarbeitet.")
+                except ValueError:
+                    flash("Ungültiges Datums-/Zeitformat für Bürgermeistertermin.", "danger")
+                    action_processed = False # Wichtig: action_processed explizit auf False setzen bei Fehler
+
+        if not action_processed and action:
+            # Diese Meldung erscheint, wenn action_processed nicht auf True gesetzt wurde
+            # UND eine Aktion vorhanden war (d.h. action war nicht None oder leer)
+            logger.warning(f"Flash-Nachricht 'Ungültige Aktion oder Status bereits gesetzt' wird für Action '{action}' (Antrag {request_id}) angezeigt. action_processed={action_processed}")
+            flash("Ungültige Aktion oder Status bereits gesetzt für Vorzimmer-Aufgabe.", "warning")
+        elif update_fields and success_message:
+            conn_db_office = None
+            try:
+                conn_db_office = sqlite3.connect("db/onoffboarding.db"); c = conn_db_office.cursor()
+                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]
+                values_office = list(update_fields.values())
+                values_office.append(request_id)
+                set_clause_str = ", ".join(set_clause_parts)
+
+                sql_query = f"UPDATE requests SET {set_clause_str} WHERE id = ?"
+                logger.debug(f"Führe DB-Update aus: {sql_query} mit Werten {tuple(values_office)}")
+                c.execute(sql_query, tuple(values_office))
+                conn_db_office.commit()
+
+                if c.rowcount > 0:
+                    flash(success_message, "success")
+                    logger.info(f"Antrag {request_id}: Vorzimmer-Status '{action}' durch '{current_user}' erfolgreich gesetzt.")
+                    updated_item = get_request_item_as_dict(request_id) # Erneut laden für check_all_subprocesses_done
+                    if updated_item:
+                        check_all_subprocesses_done(updated_item)
+                else:
+                    # Dieser Fall sollte selten eintreten, wenn die Logik oben stimmt
+                    flash("Update nicht erfolgreich (keine Zeile geändert, möglicherweise war der Status bereits so).", "warning")
+                    logger.warning(f"DB-Update für Antrag {request_id} (Action '{action}') hat keine Zeilen geändert.")
+            except sqlite3.Error as e:
+                logger.error(f"DB-Fehler beim Setzen des Vorzimmer-Status für Antrag {request_id}: {e}", exc_info=True)
+                flash("DB Fehler beim Aktualisieren des Status.", "danger")
+            finally:
+                if conn_db_office: conn_db_office.close()
+
+        return redirect(url_for('update_office_status', request_id=request_id))
+
+    # Für GET Requests
+    return render_template("update_office_status.html", request_item=request_item)
+
+
+@app.route("/manual_complete/<int:request_id>", methods=["POST"])
+@require_ad_group("AD_GROUP") # Nur generelle Admins dÃ¼rfen manuell abschlieÃŸen
+def manual_complete_request(request_id):
+    current_user = session.get("user", "System")
+    logger.info(f"âž¡ï¸ Manueller Abschluss fÃ¼r Antrag ID: {request_id} durch User '{current_user}' angefordert.")
+    request_item_for_check = get_request_item_as_dict(request_id)
+    if not request_item_for_check:
+        flash(f"Antrag {request_id} nicht gefunden.", "danger")
+        return redirect(url_for("admin"))
+    if request_item_for_check.get('status') != 'in_bearbeitung':
+        flash(f"Antrag {request_id} kann nicht manuell abgeschlossen werden (Status: {request_item_for_check.get('status')}).", "warning")
+        return redirect(url_for("view_request", request_id=request_id))
+    is_fully_completed, pending_tasks = check_all_subprocesses_done(request_item_for_check)
+    if is_fully_completed:
+        if update_request_status(request_id, "abgeschlossen", expected_current_status="in_bearbeitung"):
+            flash(f"Antrag {request_id} wurde erfolgreich manuell abgeschlossen.", "success")
+            logger.info(f"Antrag {request_id} manuell auf 'abgeschlossen' gesetzt durch '{current_user}'.")
+        else:
+            flash(f"Fehler beim manuellen AbschlieÃŸen von Antrag {request_id}.", "danger")
+    else:
+        flash(f"Antrag {request_id} kann noch nicht abgeschlossen werden. Offene Punkte: {', '.join(pending_tasks) if pending_tasks else 'Keine identifiziert'}", "warning")
+    return redirect(url_for("view_request", request_id=request_id))
+
+
+@app.route("/print_request_combined/<int:request_id>")
+#@require_ad_group("AD_GROUP") # Beispielhafter Zugriffsschutz
+def print_request_combined(request_id):
+    # Die PrÃ¼fung auf Bibliotheken kann hier entfallen, wenn sie in pdf_generator.py erfolgt
+    # und eine Exception wirft oder None zurÃ¼ckgibt.
+
+    request_item = get_request_item_as_dict(request_id)
+    if not request_item:
+        flash(f"Antrag {request_id} nicht gefunden.", "danger")
+        return redirect(url_for("admin"))
+
+    try:
+        # Die Funktion aus pdf_generator aufrufen
+        # request.url_root liefert die Basis-URL (z.B. http://localhost:5000/)
+        merged_pdf_stream = pdf_generator.create_combined_pdf(
+            request_item,
+            concrete_upload_folder, # Aus app.py Ã¼bergeben
+            request.url_root, # Basis-URL fÃ¼r relative Pfade in HTML/CSS
+            pdf_template_name="view_for_pdf.html" # Name des PDF-Templates
+        )
+
+        if merged_pdf_stream is None: # Falls create_combined_pdf None bei Fehler zurÃ¼ckgibt
+            flash("Fehler bei der PDF-Erstellung (intern).", "danger")
+            return redirect(url_for('view_request', request_id=request_id))
+
+        return send_file(
+            merged_pdf_stream,
+            as_attachment=False,
+            download_name=f'Antrag_{request_id}_komplett.pdf',
+            mimetype='application/pdf'
+        )
+    except ImportError: # FÃ¤ngt den Fehler ab, falls WeasyPrint/pypdf nicht da sind
+         flash("PDF-Erstellungsbibliotheken sind nicht verfÃ¼gbar. Bitte Admin kontaktieren.", "danger")
+         return redirect(url_for('view_request', request_id=request_id))
+    except Exception as e:
+        logger.error(f"Schwerwiegender Fehler bei der Erstellung des kombinierten PDFs fÃ¼r Antrag {request_id}: {e}", exc_info=True)
+        flash(f"Schwerwiegender Fehler bei der PDF-Erstellung: {e}", "danger")
+        return redirect(url_for('view_request', request_id=request_id))
+
+
+# init_db() Funktion bleibt unverÃ¤ndert
 def init_db():
-    """Erstellt die Datenbankdatei und die Tabelle, falls sie nicht existieren,
-       und fügt fehlende Spalten hinzu."""
-    db_dir = 'db'
-    db_file = os.path.join(db_dir, 'onoffboarding.db')
-    conn = None
+    db_dir = 'db'; db_file = os.path.join(db_dir, 'onoffboarding.db'); conn_db = None
     try:
         if not os.path.exists(db_dir):
             os.makedirs(db_dir)
-            logging.info(f"Verzeichnis '{db_dir}' erstellt.")
-
-        conn = sqlite3.connect(db_file)
-        c = conn.cursor()
-
-        # Tabelle erstellen, falls nicht vorhanden
+            logger.info(f"Verzeichnis '{db_dir}' erstellt fÃ¼r Datenbank.")
+        conn_db = sqlite3.connect(db_file); c = conn_db.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS requests (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        lastname TEXT NOT NULL,
-                        firstname TEXT NOT NULL,
-                        startdate TEXT,
-                        enddate TEXT,
-                        department TEXT,
-                        supervisor TEXT,
-                        hardware_computer TEXT,
-                        hardware_monitor TEXT,
-                        hardware_accessories TEXT,
-                        hardware_mobile TEXT,
-                        comments TEXT,
-                        referenceuser TEXT,
-                        process_type TEXT NOT NULL DEFAULT 'onboarding',
-                        status TEXT NOT NULL DEFAULT 'offen',
-                        role TEXT,
-                        department_dn TEXT,
-                        key_required BOOLEAN DEFAULT 0,
-                        required_windows BOOLEAN DEFAULT 0,
-                        hardware_required BOOLEAN DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, lastname TEXT NOT NULL, firstname TEXT NOT NULL,
+                        birthdate TEXT, job_title TEXT,
+                        startdate TEXT, enddate TEXT, department TEXT, supervisor TEXT,
+                        hardware_computer TEXT, hardware_monitor TEXT, hardware_accessories TEXT, hardware_mobile TEXT,
+                        comments TEXT, referenceuser TEXT, process_type TEXT NOT NULL DEFAULT 'onboarding',
+                        status TEXT NOT NULL DEFAULT 'offen', role TEXT, department_dn TEXT,
+                        key_required BOOLEAN DEFAULT 0, required_windows BOOLEAN DEFAULT 0,
+                        hardware_required BOOLEAN DEFAULT 0, email_account_required BOOLEAN DEFAULT 0,
+                        needs_fixed_phone BOOLEAN DEFAULT 0, needs_ris_access BOOLEAN DEFAULT 0,
+                        needs_cipkom_access BOOLEAN DEFAULT 0, other_software_notes TEXT,
+                        cipkom_reference_user TEXT, room_number TEXT,
+                        workplace_needs_new_table BOOLEAN DEFAULT 0, workplace_needs_new_chair BOOLEAN DEFAULT 0,
+                        workplace_needs_monitor_arms BOOLEAN DEFAULT 0, workplace_no_new_equipment BOOLEAN DEFAULT 0,
+                        needs_office_notification BOOLEAN DEFAULT 0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        n8n_ad_creation_status TEXT, n8n_ad_username_created TEXT,
+                        n8n_ad_initial_password TEXT, n8n_ad_status_message TEXT,
+                        n8n_hardware_status_message TEXT,
+                        hw_status_ordered_at TEXT, hw_status_ordered_by TEXT,
+                        hw_status_delivered_at TEXT, hw_status_delivered_by TEXT,
+                        hw_status_installed_at TEXT, hw_status_installed_by TEXT,
+                        hw_status_setup_done_at TEXT, hw_status_setup_done_by TEXT,
+                        n8n_key_status_message TEXT,
+                        key_status_prepared_at TEXT, key_status_prepared_by TEXT,
+                        key_status_issued_at TEXT, key_status_issued_by TEXT,
+                        key_issuance_protocol_filename TEXT,
+                        email_creation_notified_at TEXT, email_created_address TEXT,
+                        email_creation_confirmed_at TEXT, email_creation_confirmed_by TEXT,
+                        n8n_email_status_message TEXT,
+                        hr_dienstvereinbarung_at TEXT, hr_dienstvereinbarung_by TEXT,
+                        hr_datenschutz_at TEXT, hr_datenschutz_by TEXT,
+                        hr_dsgvo_informed_at TEXT, hr_dsgvo_informed_by TEXT,
+                        hr_it_directive_at TEXT, hr_it_directive_by TEXT,
+                        hr_payroll_sheet_at TEXT, hr_payroll_sheet_by TEXT,
+                        hr_security_guidelines_at TEXT, hr_security_guidelines_by TEXT,
+                        phone_status_ordered_at TEXT, phone_status_ordered_by TEXT,
+                        phone_status_setup_at TEXT, phone_status_setup_by TEXT,
+                        phone_number_assigned TEXT,
+                        ris_access_status_granted_at TEXT, ris_access_status_granted_by TEXT,
+                        cipkom_access_status_granted_at TEXT, cipkom_access_status_granted_by TEXT,
+                        n8n_software_status_message TEXT,
+                        workplace_table_ordered_at TEXT, workplace_table_ordered_by TEXT,
+                        workplace_table_setup_at TEXT, workplace_table_setup_by TEXT,
+                        workplace_chair_ordered_at TEXT, workplace_chair_ordered_by TEXT,
+                        workplace_chair_setup_at TEXT, workplace_chair_setup_by TEXT,
+                        workplace_monitor_arms_ordered_at TEXT, workplace_monitor_arms_ordered_by TEXT,
+                        workplace_monitor_arms_setup_at TEXT, workplace_monitor_arms_setup_by TEXT,
+                        office_outlook_contact_at TEXT, office_outlook_contact_by TEXT,
+                        office_distribution_lists_at TEXT, office_distribution_lists_by TEXT,
+                        office_phone_list_at TEXT, office_phone_list_by TEXT,
+                        office_birthday_calendar_at TEXT, office_birthday_calendar_by TEXT,
+                        office_welcome_gift_at TEXT, office_welcome_gift_by TEXT,
+                        office_mayor_appt_date TEXT, office_mayor_appt_confirmed_at TEXT, office_mayor_appt_confirmed_by TEXT,
+                        office_business_cards_at TEXT, office_business_cards_by TEXT,
+                        office_organigram_at TEXT, office_organigram_by TEXT,
+                        office_homepage_updated_at TEXT, office_homepage_updated_by TEXT,
+                        aida_access_created_at TEXT, aida_access_created_by TEXT,
+                        aida_key_registered_at TEXT, aida_key_registered_by TEXT
                     )''')
-        logging.info("Tabelle 'requests' geprüft/erstellt.")
-
-        # Prüfen und Hinzufügen fehlender Spalten (robustere Methode)
-        c.execute("PRAGMA table_info(requests)")
-        columns = [info[1] for info in c.fetchall()]
+        logger.info("Tabelle 'requests' geprÃ¼ft/erstellt.")
+        c.execute("PRAGMA table_info(requests)"); columns = [info[1] for info in c.fetchall()]
         required_columns = {
-             'key_required': 'BOOLEAN DEFAULT 0',
-             'required_windows': 'BOOLEAN DEFAULT 0',
-             'hardware_required': 'BOOLEAN DEFAULT 0',
-             'department_dn': 'TEXT',
-             'created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+            'birthdate': 'TEXT', 'job_title': 'TEXT',
+            # ... (alle anderen Spalten aus Ihrer init_db) ...
+            'office_homepage_updated_at': 'TEXT', 'office_homepage_updated_by': 'TEXT'
         }
         for col, col_type in required_columns.items():
             if col not in columns:
                 try:
                     c.execute(f"ALTER TABLE requests ADD COLUMN {col} {col_type}")
-                    logging.info(f"Spalte '{col}' zur Tabelle 'requests' hinzugefügt.")
+                    logger.info(f"Spalte '{col}' zur Tabelle 'requests' hinzugefÃ¼gt.")
                 except sqlite3.OperationalError as e:
-                     # Kann passieren, wenn Spalte doch schon existiert (Race Condition, etc.)
-                     logging.warning(f"Konnte Spalte '{col}' nicht hinzufügen (möglicherweise schon vorhanden): {e}")
-
-
-        conn.commit()
-        logging.info("✅ Datenbank erfolgreich initialisiert/geprüft.")
-
-    except sqlite3.Error as e:
-        logging.error(f"❌ SQLite Fehler bei der Datenbankinitialisierung ({db_file}): {e}")
-        sys.exit(f"Kritischer DB Fehler: {e}") # Beenden, wenn DB nicht initialisiert werden kann
-    except Exception as e:
-        logging.error(f"❌ Allgemeiner Fehler bei der Datenbankinitialisierung: {e}", exc_info=True)
-        sys.exit(f"Kritischer Initialisierungsfehler: {e}")
+                    logger.warning(f"Konnte Spalte '{col}' nicht hinzufÃ¼gen: {e}")
+        conn_db.commit(); logger.info("âœ… Datenbank erfolgreich initialisiert/geprÃ¼ft.")
+    except sqlite3.Error as e: logger.error(f"âŒ SQLite Fehler DB-Init ({db_file}): {e}", exc_info=True); sys.exit(f"Kritischer DB Fehler: {e}")
+    except Exception as e: logger.error(f"âŒ Allgemeiner Fehler DB-Init: {e}", exc_info=True); sys.exit(f"Kritischer Initialisierungsfehler: {e}")
     finally:
-        if conn:
-            try: conn.close()
-            except: pass
-
+        if conn_db: conn_db.close()
 
 if __name__ == '__main__':
-    init_db() # Datenbank beim Start initialisieren/prüfen
-    # Debug-Modus aus Umgebungsvariable oder Default False
+    logger.info("ðŸš€ Starte app.py (aus __main__)...")
+    init_db()
     flask_debug = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1", "t")
+    logger.info(f"Starte Flask App im Debug-Modus: {flask_debug}")
     app.run(host="0.0.0.0", port=5000, debug=flask_debug)
