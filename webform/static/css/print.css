@@ -46,7 +46,7 @@
     h2 {
         font-size: 13pt; margin-top: 18pt; margin-bottom: 8pt;
         border-bottom: 0.5px solid #777; padding-bottom: 3pt;
-        page-break-after: avoid; 
+        page-break-after: avoid;
         page-break-inside: avoid;
     }
     h6.sub-block-header {
@@ -61,61 +61,61 @@
     p { margin-bottom: 0.5em; }
 
     dl {
-        margin-left: 0; 
+        margin-left: 0;
         margin-bottom: 6pt;
-        page-break-inside: avoid !important; 
+        page-break-inside: avoid !important;
     }
     dl.sub-dl {
-        margin-left: 1.5em; 
+        margin-left: 1.5em;
         margin-top: 2pt; margin-bottom: 6pt;
-        page-break-inside: avoid !important; 
+        page-break-inside: avoid !important;
     }
 
-    /* SEHR WICHTIG FÃœR FETTSCHRIFT-DEBUGGING: */
+    /* SEHR WICHTIG FÜR FETTSCHRIFT-DEBUGGING: */
     dt {
         display: block;
-        /* NÃ¤chste Zeile einkommentieren, um zu sehen, ob der Selektor dt Ã¼berhaupt greift: */
+        /* Nächste Zeile einkommentieren, um zu sehen, ob der Selektor dt überhaupt greift: */
         /* background-color: yellow !important;  */
         font-weight: bold !important; /* Erzwingt Fettschrift */
         color: black !important; /* Stellt sicher, dass es nicht hellgrau oder so ist */
-        margin-top: 5pt; 
+        margin-top: 5pt;
         margin-bottom: 1pt;
         word-wrap: break-word;
         page-break-after: avoid;
     }
 
-    dt.sub-item { /* FÃ¼r "â†³ Abteilung:", etc. -> diese sollen NICHT fett sein */
+    dt.sub-item { /* Für "↳ Abteilung:", etc. -> diese sollen NICHT fett sein */
         font-weight: normal !important; /* explizit normal */
-        padding-left: 1.5em; /* EinrÃ¼ckung */
-        /* background-color: lightblue !important; */ /* DEBUG: Farbe fÃ¼r Sub-Items */
+        padding-left: 1.5em; /* Einrückung */
+        /* background-color: lightblue !important; */ /* DEBUG: Farbe für Sub-Items */
     }
 
     dd {
         display: block;
-        margin-left: 1.8em; 
-        margin-bottom: 5pt; 
+        margin-left: 1.8em;
+        margin-bottom: 5pt;
         word-wrap: break-word;
-        page-break-inside: avoid !important; 
-        page-break-before: avoid; 
+        page-break-inside: avoid !important;
+        page-break-before: avoid;
     }
 
     dd.sub-item-value {
-         margin-left: calc(1.8em + 1.5em); /* EinrÃ¼ckung relativ zur Basis-dd-EinrÃ¼ckung */
+         margin-left: calc(1.8em + 1.5em); /* Einrückung relativ zur Basis-dd-Einrückung */
     }
-    
-    hr.section-separator { 
-        border: 0; 
-        border-top: 0.5px solid #c0c0c0; 
-        margin: 18pt 0; /* Mehr Abstand durch HR fÃ¼r visuelle Trennung */
-        page-break-before: auto; /* Kann helfen, dass der nÃ¤chste Block eher umbricht */
+
+    hr.section-separator {
+        border: 0;
+        border-top: 0.5px solid #c0c0c0;
+        margin: 18pt 0; /* Mehr Abstand durch HR für visuelle Trennung */
+        page-break-before: auto; /* Kann helfen, dass der nächste Block eher umbricht */
     }
-    
+
     pre {
         white-space: pre-wrap; word-wrap: break-word;
         font-family: "Menlo", "Consolas", "Courier New", Courier, monospace;
         font-size: 9pt; padding: 6pt 8pt; border: 0.5px solid #d0d0d0;
-        background-color: #f8f9fa; page-break-inside: avoid; 
-        margin-left: 0; /* Pre soll nicht standardmÃ¤ÃŸig eingerÃ¼ckt sein, es sei denn es ist in einem dd */
+        background-color: #f8f9fa; page-break-inside: avoid;
+        margin-left: 0; /* Pre soll nicht standardmäßig eingerückt sein, es sei denn es ist in einem dd */
         margin-right: 0;
     }
     pre.inline-pre {
@@ -127,20 +127,20 @@
     .badge, span.badge {
         display: inline-block; padding: 1pt 3pt; font-size: 0.85em;
         font-weight: bold; border: 0.5px solid #333; border-radius: 2px;
-        color: #000; background-color: #f0f0f0; /* Leichter Hintergrund fÃ¼r Badges */
-        margin-left: 3px; vertical-align: baseline; 
+        color: #000; background-color: #f0f0f0; /* Leichter Hintergrund für Badges */
+        margin-left: 3px; vertical-align: baseline;
     }
 
     a, a:visited { color: #000000; text-decoration: none; }
 
     .section-block {
-        page-break-inside: avoid !important; /* Wichtigste Regel fÃ¼r den Zusammenhalt von BlÃ¶cken */
+        page-break-inside: avoid !important; /* Wichtigste Regel für den Zusammenhalt von Blöcken */
         page-break-before: auto; /* Motor entscheidet, ob Umbruch vor dem Block besser ist */
         margin-top: 10pt;
-        padding-top: 1pt; 
-        /* border: 1px dashed lime !important; */ /* DEBUG: Grenzen der SektionsblÃ¶cke anzeigen */
+        padding-top: 1pt;
+        /* border: 1px dashed lime !important; */ /* DEBUG: Grenzen der Sektionsblöcke anzeigen */
     }
-    /* Spezifische Regel fÃ¼r den AntragsÃ¼bersicht-Block, um ihn eher auf eine neue Seite zu zwingen, wenn er nicht der erste ist */
+    /* Spezifische Regel für den Antragsübersicht-Block, um ihn eher auf eine neue Seite zu zwingen, wenn er nicht der erste ist */
     /* Diese Regel ist aggressiv. Nur verwenden, wenn auto nicht reicht. */
     /*
     .pdf-container > .section-block + .section-block#antragsuebersicht-block {
@@ -149,7 +149,7 @@
     */
 
     .print-page-break-before { page-break-before: always !important; }
-    
+
     table, figure, img, blockquote, ul, ol { page-break-inside: avoid; }
     .no-pdf, .no-print { display: none !important; }
 }
