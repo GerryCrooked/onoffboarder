@@ -1,0 +1,155 @@
+/* webform/static/css/print.css */
+
+@media print {
+    @page {
+        size: A4 portrait;
+        margin: 1.8cm 1.5cm 1.8cm 1.5cm; /* Oben, Rechts, Unten, Links */
+
+        @top-center {
+            content: "On-/Offboarding Antrag - ID: " attr(data-request-id, string, 'N/A');
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 9pt;
+            color: #555;
+            padding-bottom: 5mm;
+        }
+
+        @bottom-right {
+            content: "Seite " counter(page) " von " counter(pages);
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 9pt;
+            color: #555;
+            padding-top: 5mm;
+        }
+    }
+
+    body {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 10pt;
+        line-height: 1.3;
+        color: #000000;
+        background-color: #ffffff;
+        margin: 0;
+        -webkit-print-color-adjust: exact;
+        color-adjust: exact;
+    }
+
+    .pdf-container { width: 100%; }
+
+    .centered-text { text-align: center; }
+    .subtitle-text { font-size: 11pt; margin-bottom: 20pt; }
+
+    h1 {
+        font-size: 16pt; text-align: center; margin-bottom: 15pt;
+        border-bottom: 1px solid #333; padding-bottom: 6pt;
+        page-break-after: avoid;
+    }
+    h2 {
+        font-size: 13pt; margin-top: 18pt; margin-bottom: 8pt;
+        border-bottom: 0.5px solid #777; padding-bottom: 3pt;
+        page-break-after: avoid; 
+        page-break-inside: avoid;
+    }
+    h6.sub-block-header {
+        font-size: 10pt; font-weight: bold; margin-top: 10pt; margin-bottom: 3pt;
+        color: #222; page-break-after: avoid;
+    }
+    h6.sub-header-indent {
+        padding-left: 1.5em; font-size: 10pt; font-weight: bold;
+        margin-top: 8pt; margin-bottom: 2pt;
+    }
+
+    p { margin-bottom: 0.5em; }
+
+    dl {
+        margin-left: 0; 
+        margin-bottom: 6pt;
+        page-break-inside: avoid !important; 
+    }
+    dl.sub-dl {
+        margin-left: 1.5em; 
+        margin-top: 2pt; margin-bottom: 6pt;
+        page-break-inside: avoid !important; 
+    }
+
+    /* SEHR WICHTIG FÃœR FETTSCHRIFT-DEBUGGING: */
+    dt {
+        display: block;
+        /* NÃ¤chste Zeile einkommentieren, um zu sehen, ob der Selektor dt Ã¼berhaupt greift: */
+        /* background-color: yellow !important;  */
+        font-weight: bold !important; /* Erzwingt Fettschrift */
+        color: black !important; /* Stellt sicher, dass es nicht hellgrau oder so ist */
+        margin-top: 5pt; 
+        margin-bottom: 1pt;
+        word-wrap: break-word;
+        page-break-after: avoid;
+    }
+
+    dt.sub-item { /* FÃ¼r "â†³ Abteilung:", etc. -> diese sollen NICHT fett sein */
+        font-weight: normal !important; /* explizit normal */
+        padding-left: 1.5em; /* EinrÃ¼ckung */
+        /* background-color: lightblue !important; */ /* DEBUG: Farbe fÃ¼r Sub-Items */
+    }
+
+    dd {
+        display: block;
+        margin-left: 1.8em; 
+        margin-bottom: 5pt; 
+        word-wrap: break-word;
+        page-break-inside: avoid !important; 
+        page-break-before: avoid; 
+    }
+
+    dd.sub-item-value {
+         margin-left: calc(1.8em + 1.5em); /* EinrÃ¼ckung relativ zur Basis-dd-EinrÃ¼ckung */
+    }
+    
+    hr.section-separator { 
+        border: 0; 
+        border-top: 0.5px solid #c0c0c0; 
+        margin: 18pt 0; /* Mehr Abstand durch HR fÃ¼r visuelle Trennung */
+        page-break-before: auto; /* Kann helfen, dass der nÃ¤chste Block eher umbricht */
+    }
+    
+    pre {
+        white-space: pre-wrap; word-wrap: break-word;
+        font-family: "Menlo", "Consolas", "Courier New", Courier, monospace;
+        font-size: 9pt; padding: 6pt 8pt; border: 0.5px solid #d0d0d0;
+        background-color: #f8f9fa; page-break-inside: avoid; 
+        margin-left: 0; /* Pre soll nicht standardmÃ¤ÃŸig eingerÃ¼ckt sein, es sei denn es ist in einem dd */
+        margin-right: 0;
+    }
+    pre.inline-pre {
+        display: inline; padding: 0; border: none;
+        background-color: transparent; margin-left: 0; margin-right: 0;
+        font-family: inherit; font-size: inherit; white-space: pre-line;
+    }
+
+    .badge, span.badge {
+        display: inline-block; padding: 1pt 3pt; font-size: 0.85em;
+        font-weight: bold; border: 0.5px solid #333; border-radius: 2px;
+        color: #000; background-color: #f0f0f0; /* Leichter Hintergrund fÃ¼r Badges */
+        margin-left: 3px; vertical-align: baseline; 
+    }
+
+    a, a:visited { color: #000000; text-decoration: none; }
+
+    .section-block {
+        page-break-inside: avoid !important; /* Wichtigste Regel fÃ¼r den Zusammenhalt von BlÃ¶cken */
+        page-break-before: auto; /* Motor entscheidet, ob Umbruch vor dem Block besser ist */
+        margin-top: 10pt;
+        padding-top: 1pt; 
+        /* border: 1px dashed lime !important; */ /* DEBUG: Grenzen der SektionsblÃ¶cke anzeigen */
+    }
+    /* Spezifische Regel fÃ¼r den AntragsÃ¼bersicht-Block, um ihn eher auf eine neue Seite zu zwingen, wenn er nicht der erste ist */
+    /* Diese Regel ist aggressiv. Nur verwenden, wenn auto nicht reicht. */
+    /*
+    .pdf-container > .section-block + .section-block#antragsuebersicht-block {
+        page-break-before: always !important;
+    }
+    */
+
+    .print-page-break-before { page-break-before: always !important; }
+    
+    table, figure, img, blockquote, ul, ol { page-break-inside: avoid; }
+    .no-pdf, .no-print { display: none !important; }
+}
