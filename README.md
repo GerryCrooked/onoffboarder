@@ -18,10 +18,8 @@ Optional: n8n für erweiterte Workflow-Automatisierung
 
 Schritte
 Repository klonen:
-´´´
-git clone https://github.com/GerryCrooked/onoffboarder.git
-cd onoffboarder
-´´´
+´´´git clone https://github.com/GerryCrooked/onoffboarder.git
+cd onoffboarder´´´
 
 Umgebungsvariablen konfigurieren:
 ```cp .env.example .env ```
