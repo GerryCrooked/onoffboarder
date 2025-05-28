@@ -26,11 +26,11 @@
                 <dd>{{ request.job_title or 'N/A' }}</dd>
                 {% if request.process_type == 'onboarding' and request.startdate %}
                 <dt>Startdatum:</dt>
-                <dd>{{ request.startdate | format_datetime('%d.%m.%Y') if request.startdate else 'N/A' }}</dd>
+                <dd>{{ request.startdate | format_datetime('%d.%d.%Y') if request.startdate else 'N/A' }}</dd>
                 {% endif %}
                 {% if request.process_type == 'offboarding' and request.enddate %}
                 <dt>Austrittsdatum:</dt>
-                <dd>{{ request.enddate | format_datetime('%d.%m.%Y') if request.enddate else 'N/A' }}</dd>
+                <dd>{{ request.enddate | format_datetime('%d.%d.%Y') if request.enddate else 'N/A' }}</dd>
                 {% endif %}
             </dl>
         </div>
@@ -154,6 +154,18 @@
                 <dt>Schlüssel in AIDA aufgenommen:</dt>
                 <dd>{% if request.aida_key_registered_at %}<span class="badge">Ja</span> ({{request.aida_key_registered_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
             </dl>
+            {# NEU HIER: Schlüssel-Ausgabe im HR Block für PDF #}
+            {% if request.key_required %}
+                <h6 class="sub-block-header"><span class="emoji-icon">🔑</span> Schlüssel (Ausgabe):</h6>
+                <dl>
+                    <dt>Ausgegeben:</dt>
+                    <dd>{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% else %}Ausstehend{% endif %}</dd>
+                    {% if request.key_issuance_protocol_filename %}
+                        <dt>Protokollname (intern):</dt>
+                        <dd>{{ request.key_issuance_protocol_filename }} <em>(Wird als Anhang im PDF mitgeführt)</em></dd>
+                    {% endif %}
+                </dl>
+            {% endif %}
         </div>
         <hr class="section-separator">
 
@@ -228,19 +240,14 @@
 
         <div class="section-block">
             <h2><span class="emoji-icon">🏗️</span> Bauamt Status (Schlüssel, Zimmer & Arbeitsplatz)</h2>
-            <h6 class="sub-block-header"><span class="emoji-icon">🔑</span> Schlüssel:</h6>
+            {# Schlüsselvorbereitung bleibt hier #}
+            <h6 class="sub-block-header"><span class="emoji-icon">🔑</span> Schlüssel (Vorbereitung):</h6>
             <dl>
                 <dt>Schlüssel benötigt:</dt>
                 <dd>{{ 'Ja' if request.key_required else 'Nein' }}</dd>
                 {% if request.key_required %}
                     <dt>Vorbereitet:</dt>
                     <dd>{% if request.key_status_prepared_at %}Ja, am {{ request.key_status_prepared_at | format_datetime }} ({{ request.key_status_prepared_by }}){% else %}Nein / Ausstehend{% endif %}</dd>
-                    <dt>Ausgegeben:</dt>
-                    <dd>{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% elif request.key_status_prepared_at %}Ausstehend{% else %}-{% endif %}</dd>
-                    {% if request.key_issuance_protocol_filename %}
-                        <dt>Protokollname (intern):</dt>
-                        <dd>{{ request.key_issuance_protocol_filename }} <em>(Wird als Anhang im PDF mitgeführt)</em></dd>
-                    {% endif %}
                 {% endif %}
             </dl>
             <h6 class="sub-block-header"><span class="emoji-icon">🚪</span> Zimmer:</h6>

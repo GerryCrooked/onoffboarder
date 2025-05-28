@@ -52,6 +52,7 @@
     <h1>Bauamt Status für Antrag ID: {{ request_item.id }}</h1>
     <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
     <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p>
+    <p>Abteilung: {{ request_item.department or 'N/A' }} {% if request_item.department_dn %} ({{ request_item.department_dn }}) {% endif %}</p>
     <hr>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -88,51 +89,31 @@
         {% endif %}
     </div>
 
+    {# Schlüsselvorbereitung bleibt hier #}
     {% if request_item.key_required %}
     <div class="status-block sub-section">
         <h5><span class="emoji-icon">🔑</span> Schlüsselverwaltung</h5>
-        <div class="task-item {% if request_item.key_status_prepared_at %}status-done{% endif %} mb-3"> {# task-item hinzugefügt #}
+        <div class="task-item {% if request_item.key_status_prepared_at %}status-done{% endif %} mb-3">
             <h6>Schritt 1: Vorbereitung</h6>
             {% if not request_item.key_status_prepared_at %}
                 <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" style="display: inline-block;">
                     <input type="hidden" name="action" value="key_prepared">
-                    <button type="submit" class="btn btn-primary btn-sm">Schlüssel für User vorbereitet</button> {# btn-sm hinzugefügt #}
+                    <button type="submit" class="btn btn-primary btn-sm">Schlüssel für User vorbereitet</button>
                 </form>
             {% else %}
-                <p class="text-success mb-0">✔️ Schlüssel vorbereitet am: {# mb-0 für kompaktere Ansicht #}
+                <p class="text-success mb-0">✔️ Schlüssel vorbereitet am:
                     {{ request_item.key_status_prepared_at | format_datetime }}
                     durch: {{ request_item.key_status_prepared_by }}
                 </p>
             {% endif %}
         </div>
-
-        {% if request_item.key_status_prepared_at %}
-        <div class="task-item {% if request_item.key_status_issued_at %}status-done{% endif %}"> {# task-item hinzugefügt #}
-            <h6>Schritt 2: Ausgabe an Mitarbeiter</h6>
-            {% if not request_item.key_status_issued_at %}
-                {% if show_key_issue_button %} {# Diese Variable kommt von app.py #}
-                    <form method="POST" action="{{ url_for('update_bauamt_status', request_id=request_item.id) }}" enctype="multipart/form-data">
-                        <input type="hidden" name="action" value="key_issued">
-                        <div class="mb-3">
-                            <label for="protocol_pdf" class="form-label">Übergabeprotokoll (PDF):</label>
-                            <input class="form-control form-control-sm" type="file" id="protocol_pdf" name="protocol_pdf" accept=".pdf" required> {# form-control-sm #}
-                        </div>
-                        <button type="submit" class="btn btn-primary btn-sm">Schlüssel an {{ request_item.firstname }} {{ request_item.lastname }} ausgegeben & Protokoll hochladen</button>
-                    </form>
-                {% else %}
-                    <p class="text-muted"><em>Der Button zur Bestätigung der Schlüsselausgabe wird aktiv, sobald das Startdatum ({{ request_item.startdate | format_datetime('%d.%m.%Y') }}) erreicht oder überschritten ist.</em></p>
-                    <button type="button" class="btn btn-secondary btn-sm" disabled>Schlüssel ausgeben & Protokoll hochladen</button>
-                {% endif %}
-            {% else %}
-                <p class="text-success mb-0">✔️ Schlüssel ausgegeben am:
-                    {{ request_item.key_status_issued_at | format_datetime }}
-                    durch: {{ request_item.key_status_issued_by }}.
-                </p>
-                {% if request_item.key_issuance_protocol_filename %}
-                    <p class="mt-1"><a href="{{ url_for('uploaded_file', filename=request_item.key_issuance_protocol_filename) }}" target="_blank" class="btn btn-outline-secondary btn-sm">Übergabeprotokoll herunterladen</a></p>
-                {% endif %}
-            {% endif %}
-        </div>
+        {# Hinweis auf die Verlagerung der Ausgabe #}
+        {% if request_item.key_status_prepared_at and not request_item.key_status_issued_at %}
+            <div class="alert alert-info alert-sm mt-2">
+                Die Schlüsselausgabe erfolgt nun durch die Personalabteilung.
+            </div>
+        {% elif not request_item.key_required %}
+            <p class="text-muted"><em>Für diesen Antrag wurde kein Schlüssel angefordert.</em></p>
         {% endif %}
     </div>
     {% elif request_item.key_required is none or not request_item.key_required %}

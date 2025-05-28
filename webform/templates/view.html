@@ -6,7 +6,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/print.css') }}" media="print">
     <style>
-        body { padding-top: 70px; }
+        body { padding-top: 0; } /* Setzt padding-top des Bodys auf 0 */
         .card { margin-bottom: 20px; }
         .card-header {
             font-weight: bold;
@@ -18,13 +18,13 @@
         /* dt { font-weight: bold; } */ /* Wird durch Bootstrap-Klassen oder dl.row gesteuert */
         /* dd { margin-left: 0; padding-left: 1.5em; } */ /* Wird durch Bootstrap-Klassen gesteuert */
         .emoji-icon { margin-right: 0.5em; }
-        .navbar { margin-bottom: 1rem !important; } /* Abstand nach Navbar */
+        .navbar { margin-bottom: 0 !important; } /* Stellt sicher, dass die Navbar keinen unteren Margin hat */
         .badge.bg-success { min-width: 120px; text-align: center;}
         .sub-block-header { font-size: 1rem; margin-top: 0.75rem; margin-bottom: 0.25rem; color: #495057; }
         .action-button-group a.btn, .action-button-group form button { margin-bottom: 0.5rem; }
     </style>
 </head>
-<body class="pt-4"> {# Padding-top für fixed navbar angepasst #}
+<body class=""> {# pt-4 Klasse vom Body entfernt #}
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
         <div class="container-fluid">
             <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
@@ -51,7 +51,7 @@
         </div>
     </nav>
 
-    <div class="container" style="padding-top: 20px;">
+    <div class="container" style="padding-top: 80px;"> {# Erhöhtes Padding für den Container #}
         <h1>Antragsdetails für ID: {{ request.id }}</h1>
         <p>Aktueller Gesamtstatus: <span class="badge
             {% if request.status == 'offen' %}bg-warning text-dark
@@ -192,6 +192,14 @@
                             <dt class="col-sm-6">AIDA-Zugang erstellt:</dt><dd class="col-sm-6">{% if request.aida_access_created_at %}<span class="badge bg-success">Ja</span> ({{request.aida_access_created_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
                             <dt class="col-sm-6">Schlüssel in AIDA aufgenommen:</dt><dd class="col-sm-6">{% if request.aida_key_registered_at %}<span class="badge bg-success">Ja</span> ({{request.aida_key_registered_at | format_datetime}}){% else %}Ausstehend{% endif %}</dd>
                         </dl>
+                        {# NEU HIER: Schlüssel-Ausgabe im HR Block #}
+                        {% if request.key_required %}
+                            <h6 class="sub-block-header mt-3"><span class="emoji-icon">🔑</span> Schlüssel (Ausgabe):</h6>
+                            <dl class="row">
+                                <dt class="col-sm-5">Ausgegeben:</dt><dd class="col-sm-7">{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% else %}Ausstehend{% endif %}</dd>
+                                {% if request.key_issuance_protocol_filename %}<dt class="col-sm-5">Protokoll:</dt><dd class="col-sm-7"><a href="{{ url_for('uploaded_file', filename=request.key_issuance_protocol_filename) }}" target="_blank">{{ request.key_issuance_protocol_filename }}</a></dd>{% endif %}
+                            </dl>
+                        {% endif %}
                         {% if is_user_in_group_for_template(ENV_HR_GROUP) %}
                         <div class="action-button-group"><a href="{{ url_for('hr_update_status', request_id=request.id) }}" class="btn btn-sm btn-outline-primary mt-2">HR & AIDA-Status bearbeiten</a></div>
                         {% endif %}
@@ -272,11 +280,11 @@
                         {% if bauamt_all_relevant_done %}<span class="badge bg-success ms-auto">ABGESCHLOSSEN</span>{% endif %}
                     </div>
                     <div class="card-body">
-                        <h6><span class="emoji-icon">🔑</span> Schlüssel:</h6>
+                        {# Schlüsselvorbereitung bleibt hier #}
+                        <h6><span class="emoji-icon">🔑</span> Schlüssel (Vorbereitung):</h6>
                         <dl class="row">
-                            {# ... (Inhalt wie vorher) ... #}
                             <dt class="col-sm-5">Schlüssel benötigt:</dt><dd class="col-sm-7">{{ 'Ja' if request.key_required else 'Nein' }}</dd>
-                            {% if request.key_required %}<dt class="col-sm-5">Vorbereitet:</dt><dd class="col-sm-7">{% if request.key_status_prepared_at %}Ja, am {{ request.key_status_prepared_at | format_datetime }} ({{ request.key_status_prepared_by }}){% else %}Nein / Ausstehend{% endif %}</dd><dt class="col-sm-5">Ausgegeben:</dt><dd class="col-sm-7">{% if request.key_status_issued_at %}Ja, am {{ request.key_status_issued_at | format_datetime }} ({{ request.key_status_issued_by }}){% elif request.key_status_prepared_at %}Ausstehend{% else %}-{% endif %}</dd>{% if request.key_issuance_protocol_filename %}<dt class="col-sm-5">Protokoll:</dt><dd class="col-sm-7"><a href="{{ url_for('uploaded_file', filename=request.key_issuance_protocol_filename) }}" target="_blank">{{ request.key_issuance_protocol_filename }}</a></dd>{% endif %}{% endif %}
+                            {% if request.key_required %}<dt class="col-sm-5">Vorbereitet:</dt><dd class="col-sm-7">{% if request.key_status_prepared_at %}Ja, am {{ request.key_status_prepared_at | format_datetime }} ({{ request.key_status_prepared_by }}){% else %}Nein / Ausstehend{% endif %}</dd>{% endif %}
                         </dl>
                         <h6 class="mt-3"><span class="emoji-icon">🚪</span> Zimmer:</h6>
                         <dl class="row"><dt class="col-sm-5">Zimmernummer (Bauamt):</dt><dd class="col-sm-7">{{ request.room_number or 'Noch nicht festgelegt' }}</dd></dl>

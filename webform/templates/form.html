@@ -7,12 +7,12 @@
     <link href="https://cdn.jsdelivr.net/npm/jstree@3.3.12/dist/themes/default/style.min.css" rel="stylesheet">
     <style>
         .hidden { display: none; }
-        body { padding-top: 70px; }
-        .navbar { margin-bottom: 1rem !important; }
+        body { padding-top: 0; } /* Setzt padding-top des Bodys auf 0 */
+        .navbar { margin-bottom: 0 !important; } /* Stellt sicher, dass die Navbar keinen unteren Margin hat */
         .form-section-heading { margin-top: 1.5rem; margin-bottom: 0.5rem; padding-bottom: 0.25rem; border-bottom: 1px solid #eee;}
     </style>
 </head>
-<body class="pt-4">
+<body class=""> {# pt-4 Klasse vom Body entfernt #}
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
         <a class="navbar-brand" href="{{ url_for('form') if session.is_admin else (url_for('admin') if session.user else url_for('login')) }}">On-/Offboarding</a>
@@ -42,7 +42,7 @@
     </div>
 </nav>
 
-<div class="container" style="padding-top: 20px;">
+<div class="container" style="padding-top: 80px;"> {# Erhöhtes Padding für den Container #}
     <h1>On-/Offboarding Formular</h1>
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
@@ -97,15 +97,20 @@
             <input type="checkbox" class="form-check-input" id="needs_windows_user" name="needs_windows_user" value="true" onchange="toggleWindowsUserFields()" {{ 'checked' if form_data.get('needs_windows_user') == 'true' else '' }}>
             <label class="form-check-label" for="needs_windows_user">Windows Benutzerkonto benötigt</label>
         </div>
-        <div id="windows_user_fields" class="{{ '' if form_data.get('needs_windows_user') == 'true' else 'hidden' }}">
-            <div class="mb-3">
-                <label class="form-label">Abteilung (aus OU wählen)</label>
-                <input type="text" id="department" name="department" class="form-control" value="{{ form_data.get('department', '') }}" readonly>
-                <input type="hidden" id="department_dn" name="department_dn" value="{{ form_data.get('department_dn', '') }}">
+        
+        {# Abteilung Feld - wird dynamisch behandelt #}
+        <div class="mb-3">
+            <label for="department" class="form-label" id="department_label">Abteilung</label>
+            <input type="text" id="department" name="department" class="form-control" value="{{ form_data.get('department', '') }}">
+            <input type="hidden" id="department_dn" name="department_dn" value="{{ form_data.get('department_dn', '') }}">
+            <div id="ou-tree-container"> {# Container für den OU-Baum #}
                 <div id="ou-tree" class="border p-2 mt-2" style="max-height: 300px; overflow-y: auto;">
                     <p class="loading-placeholder">Abteilungsstruktur lädt...</p>
                 </div>
             </div>
+        </div>
+
+        <div id="windows_user_specific_fields"> {# Felder, die nur bei Windows-Konto benötigt werden #}
             <div class="mb-3">
                 <label for="referenceuser" class="form-label">Referenzbenutzer (Windows Account, optional)</label>
                 <select id="referenceuser" name="referenceuser" class="form-select">
@@ -270,36 +275,63 @@
 <script>
     // JavaScript Logik (wie von Ihnen bereitgestellt, ggf. leicht angepasst für Konsistenz)
     function toggleWindowsUserFields() {
-        const windowsUserFields = $('#windows_user_fields');
         const needsWindowsUserCheckbox = $('#needs_windows_user');
         const departmentInput = $('#department');
-        const supervisorSelect = $('#supervisor'); 
-        const ouTreeDiv = $('#ou-tree');
+        const departmentLabel = $('#department_label');
+        const departmentDnInput = $('#department_dn');
+        const ouTreeContainer = $('#ou-tree-container');
+        const referenceUserSelect = $('#referenceuser');
+        const supervisorSelect = $('#supervisor');
+        const windowsUserSpecificFields = $('#windows_user_specific_fields');
         const isChecked = needsWindowsUserCheckbox.prop('checked');
 
-        windowsUserFields.toggleClass('hidden', !isChecked);
-        departmentInput.prop('required', isChecked); 
-        supervisorSelect.prop('required', isChecked);
-
-        if (isChecked && ouTreeDiv.jstree(true) == false) { 
-             ouTreeDiv.html(''); 
-             ouTreeDiv.jstree({
-                'core': { 
-                    'data': { 
-                        'url': "{{ url_for('ou_tree') }}", // Jinja für URL verwenden
-                        'dataType': 'json', 
-                        'error': function(jqXHR, textStatus, errorThrown) {
-                            console.error("Fehler beim Laden des OU-Baums:", textStatus, errorThrown);
-                            ouTreeDiv.html('<p class="text-danger">Fehler beim Laden der Abteilungsstruktur.</p>');
+        // Toggle visibility of Windows-specific fields
+        windowsUserSpecificFields.toggleClass('hidden', !isChecked);
+        
+        // Handle 'Abteilung' field behavior
+        if (isChecked) {
+            departmentLabel.text('Abteilung (aus OU wählen)');
+            departmentInput.prop('readonly', true);
+            departmentInput.prop('required', true); // Abteilung ist Pflichtfeld bei Windows Konto
+            departmentDnInput.prop('required', true);
+            ouTreeContainer.show(); // Show OU tree
+            
+            // Initialize jstree if not already initialized
+            if (ouTreeContainer.find('#ou-tree').jstree(true) == false) { 
+                ouTreeContainer.find('#ou-tree').html(''); 
+                ouTreeContainer.find('#ou-tree').jstree({
+                    'core': { 
+                        'data': { 
+                            'url': "{{ url_for('ou_tree') }}", // Jinja für URL verwenden
+                            'dataType': 'json', 
+                            'error': function(jqXHR, textStatus, errorThrown) {
+                                console.error("Fehler beim Laden des OU-Baums:", textStatus, errorThrown);
+                                ouTreeContainer.find('#ou-tree').html('<p class="text-danger">Fehler beim Laden der Abteilungsstruktur.</p>');
+                            }
                         }
                     }
-                }
-            });
-        } else if (!isChecked) {
-            departmentInput.val(''); 
-            $('#department_dn').val('');
-            $('#referenceuser').empty().append(new Option("Bitte Abteilung wählen", ""));
-            loadInitialSupervisors(); 
+                });
+            }
+            // Ensure supervisor is required when Windows account is needed
+            supervisorSelect.prop('required', true);
+
+            // If a department was manually entered, clear it when switching to AD mode
+            if (departmentInput.val() && !departmentDnInput.val()) {
+                departmentInput.val('');
+            }
+
+        } else {
+            departmentLabel.text('Abteilung (Freitext)');
+            departmentInput.prop('readonly', false);
+            departmentInput.prop('required', false); // Abteilung ist optionales Freitextfeld
+            departmentDnInput.val(''); // Clear DN
+            departmentDnInput.prop('required', false);
+            ouTreeContainer.hide(); // Hide OU tree
+
+            // Clear AD-related selections
+            referenceUserSelect.empty().append(new Option("--- Bitte wählen (optional) ---", ""));
+            loadInitialSupervisors(); // Reload all supervisors for non-AD selection
+            supervisorSelect.prop('required', false); // Supervisor ist nicht Pflichtfeld, wenn kein Windows Konto
         }
     };
 
@@ -441,6 +473,7 @@
         $('#supervisor').data('current-value', "{{ form_data.get('supervisor', '') }}");
         $('#referenceuser').data('current-value', "{{ form_data.get('referenceuser', '') }}");
         
+        // Initialen Zustand der Felder beim Laden der Seite setzen
         toggleWindowsUserFields(); 
         toggleHardwareFields();
         toggleCipkomRefUserField();
@@ -520,7 +553,14 @@
                 if (isValid && $('#supervisor').val() === '') {
                     alert('Bitte wählen Sie einen Vorgesetzten aus.'); $('#supervisor').focus(); isValid = false;
                 }
+            } else if (isValid && !needsWindows) {
+                // Wenn Windows-Konto NICHT benötigt wird, prüfen wir das Freitextfeld für Abteilung
+                if ($('#department').val().trim() === '') {
+                    // Optional: Wenn Abteilung als Freitextfeld immer noch Pflicht sein soll
+                    // alert('Bitte geben Sie eine Abteilung ein.'); $('#department').focus(); isValid = false;
+                }
             }
+
             const needsHardware = $('#needs_hardware').prop('checked');
             if (isValid && needsHardware) {
                 if (!$('input[name="hardware_computer"]:checked').length) {

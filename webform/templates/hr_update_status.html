@@ -5,18 +5,18 @@
     <title>HR & AIDA Status aktualisieren - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { padding-top: 70px; }
+        body { padding-top: 0; } /* Setzt padding-top des Bodys auf 0 */
         .status-section { margin-bottom: 2rem; }
         .status-block { margin-bottom: 1rem; padding: 1rem; border: 1px solid #dee2e6; border-radius: .375rem; }
         .task-item { margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #eee; }
         .task-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0;}
         .status-done { background-color: #d1e7dd; border-color: #badbcc; }
         .status-done p, .status-done h6 { color: #0f5132; }
-        .navbar { margin-bottom: 1rem; } /* Geändert von 0 !important für etwas Abstand */
+        .navbar { margin-bottom: 0 !important; } /* Stellt sicher, dass die Navbar keinen unteren Margin hat */
         .emoji-icon { margin-right: 0.5em; }
     </style>
 </head>
-<body class="pt-4">
+<body class=""> {# pt-4 Klasse vom Body entfernt #}
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
@@ -54,7 +54,7 @@
     </div>
 </nav>
 
-<div class="container">
+<div class="container" style="padding-top: 80px;"> {# Erhöhtes Padding für den Container #}
     {% if request_item %} {# Hauptinhalt nur anzeigen, wenn request_item vorhanden ist #}
     <h1>HR &amp; AIDA Status für Antrag ID: {{ request_item.id }}</h1>
     <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
@@ -189,11 +189,62 @@
         </div>
     </div> 
     
+    {# NEU HIER: Schlüssel-Ausgabe #}
+    {% if request_item.key_required %}
+    <div class="status-section">
+        <h3 class="mt-4"><span class="emoji-icon">🔑</span> Schlüsselverwaltung (Ausgabe)</h3>
+        {# Hinweis, dass Vorbereitung im Bauamt ist #}
+        {% if request_item.key_required and not request_item.key_status_prepared_at %}
+            <div class="alert alert-info alert-sm">
+                Die Schlüssel müssen zuerst vom Bauamt vorbereitet werden, bevor sie ausgegeben werden können.
+            </div>
+        {% elif request_item.key_required and request_item.key_status_prepared_at %}
+            <p class="text-muted">✔️ Schlüssel vom Bauamt vorbereitet am: {{ request_item.key_status_prepared_at | format_datetime }} durch: {{ request_item.key_status_prepared_by }}</p>
+        {% endif %}
+
+        <div class="status-block task-item {% if request_item.key_status_issued_at %}status-done{% endif %}">
+            <h6>Schritt: Ausgabe an Mitarbeiter</h6>
+            {% if not request_item.key_status_issued_at %}
+                {% if show_key_issue_button %} {# Diese Variable kommt jetzt von app.py, basierend auf Startdatum und key_required UND key_status_prepared_at #}
+                    <form method="POST" action="{{ url_for('hr_update_status', request_id=request_item.id) }}" enctype="multipart/form-data">
+                        <input type="hidden" name="action" value="key_issued">
+                        <div class="mb-3">
+                            <label for="protocol_pdf" class="form-label">Übergabeprotokoll (PDF):</label>
+                            <input class="form-control form-control-sm" type="file" id="protocol_pdf" name="protocol_pdf" accept=".pdf" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-sm">Schlüssel an {{ request_item.firstname }} {{ request_item.lastname }} ausgegeben & Protokoll hochladen</button>
+                    </form>
+                {% else %}
+                    {# Text angepasst für die Abhängigkeit von Vorbereitung und Startdatum #}
+                    <p class="text-muted">
+                        <em>Der Button zur Bestätigung der Schlüsselausgabe wird aktiv, sobald die Schlüssel vom Bauamt vorbereitet wurden
+                        {% if request_item.startdate %}, und das Startdatum ({{ request_item.startdate | format_datetime('%d.%m.%Y') }}) erreicht oder überschritten ist{% endif %}.</em>
+                    </p>
+                    <button type="button" class="btn btn-secondary btn-sm" disabled>Schlüssel ausgeben & Protokoll hochladen</button>
+                {% endif %}
+            {% else %}
+                <p class="text-success mb-0">✔️ Schlüssel ausgegeben am:
+                    {{ request_item.key_status_issued_at | format_datetime }}
+                    durch: {{ request_item.key_status_issued_by }}.
+                </p>
+                {% if request_item.key_issuance_protocol_filename %}
+                    <p class="mt-1"><a href="{{ url_for('uploaded_file', filename=request_item.key_issuance_protocol_filename) }}" target="_blank" class="btn btn-outline-secondary btn-sm">Übergabeprotokoll herunterladen</a></p>
+                {% endif %}
+            {% endif %}
+        </div>
+    </div>
+    {% elif request_item.key_required is none or not request_item.key_required %}
+        <div class="status-section">
+            <h3 class="mt-4"><span class="emoji-icon">🔑</span> Schlüsselverwaltung (Ausgabe)</h3>
+            <p class="text-muted"><em>Für diesen Antrag wurde kein Schlüssel angefordert.</em></p>
+        </div>
+    {% endif %}
+    
     <div class="mt-4 mb-5">
         {% if session.is_admin %} {# ADMIN_MAIN_GROUP #}
             <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
-        {% elif session.user %} {# Fallback für HR User ohne Admin-Rechte #}
-             <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zurück zum Dashboard</a>
+        {% else %} {# Fallback für HR User ohne Admin-Rechte #}
+             <a href="{{ url_for('user_dashboard') }}" class="btn btn-secondary">Zurück zum Dashboard</a>
         {% endif %}
     </div>
     {% else %}

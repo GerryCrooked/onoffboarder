@@ -5,7 +5,7 @@
     <title>Vorzimmer Status - Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { padding-top: 70px; }
+        body { padding-top: 0; } /* Setzt padding-top des Bodys auf 0 */
         .status-section { margin-bottom: 1.5rem; }
         .task-item {
             padding: 1rem;
@@ -15,11 +15,11 @@
         }
         .status-done { background-color: #d1e7dd; border-color: #badbcc; }
         .status-done p, .status-done h6 { color: #0f5132; }
-        .navbar { margin-bottom: 1rem; } /* Geändert */
+        .navbar { margin-bottom: 0 !important; } /* Stellt sicher, dass die Navbar keinen unteren Margin hat */
         .emoji-icon { margin-right: 0.5em; }
     </style>
 </head>
-<body class="pt-4">
+<body class=""> {# pt-4 Klasse vom Body entfernt #}
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
@@ -52,11 +52,19 @@
     </div>
 </nav>
 
-<div class="container">
+<div class="container" style="padding-top: 80px;"> {# Erhöhtes Padding für den Container #}
     {% if request_item %}
     <h1>Vorzimmer Status für Antrag ID: {{ request_item.id }}</h1>
     <p>Mitarbeiter: <strong>{{ request_item.firstname }} {{ request_item.lastname }}</strong></p>
     <p>Startdatum: {{ request_item.startdate | format_datetime('%d.%m.%Y') if request_item.startdate else 'N/A' }}</p>
+    
+    {# NEUE INFORMATIONEN HIER EINFÜGEN #}
+    <p>Geburtsdatum: {{ request_item.birthdate | format_datetime('%d.%m.%Y') if request_item.birthdate else 'N/A' }}</p>
+    <p>Abteilung: {{ request_item.department or 'N/A' }} {% if request_item.department_dn %} ({{ request_item.department_dn }}) {% endif %}</p>
+    <p>E-Mail: {{ request_item.email_created_address or 'N/A' }}</p>
+    <p>Zimmernummer: {{ request_item.room_number or 'N/A' }}</p>
+    <p>Telefonnummer: {{ request_item.phone_number_assigned or 'N/A' }}</p>
+    
     <hr>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -140,8 +148,8 @@
     <div class="mt-4 mb-5">
         {% if session.is_admin %}
             <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary">Zurück zur Antragsansicht</a>
-        {% elif session.user %}
-            <a href="{{ url_for('admin') }}" class="btn btn-secondary">Zum Dashboard</a>
+        {% else %}
+            <a href="{{ url_for('user_dashboard') }}" class="btn btn-secondary">Zum Dashboard</a>
         {% endif %}
     </div>
     {% else %}

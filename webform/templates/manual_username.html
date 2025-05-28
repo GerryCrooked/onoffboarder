@@ -5,11 +5,11 @@
     <title>Manueller Benutzername für Antrag {{ request_item.id if request_item else 'Unbekannt' }}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { padding-top: 70px; } 
-        .navbar { margin-bottom: 1rem; }
+        body { padding-top: 0; } /* Setzt padding-top des Bodys auf 0 */
+        .navbar { margin-bottom: 0 !important; } /* Stellt sicher, dass die Navbar keinen unteren Margin hat */
     </style>
 </head>
-<body class="pt-4">
+<body class=""> {# pt-4 Klasse vom Body entfernt #}
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
     <div class="container-fluid">
@@ -38,7 +38,7 @@
     </div>
 </nav>
 
-    <div class="container">
+    <div class="container" style="padding-top: 80px;"> {# Erhöhtes Padding für den Container #}
         {% if request_item %}
         <h1>Manueller Benutzername für Antrag ID: {{ request_item.id }}</h1>
         <hr>
@@ -67,10 +67,10 @@
             <div class="mt-4">
                 <button type="submit" class="btn btn-primary">Neuen Usernamen verwenden und Account-Erstellung fortsetzen</button>
                 {# Der Zurück-Link sollte für IT-Nutzer zur Detailansicht führen, wenn sie Admin-Rechte haben. #}
-                {% if is_user_in_group_for_template(ENV_ADMIN_MAIN_GROUP) %}
+                {% if session.is_admin %}
                     <a href="{{ url_for('view_request', request_id=request_item.id) }}" class="btn btn-secondary ms-2">Abbrechen und zurück zur Antragsansicht</a>
                 {% else %}
-                     <a href="{{ url_for('admin') }}" class="btn btn-secondary ms-2">Abbrechen und zum Dashboard</a>
+                     <a href="{{ url_for('user_dashboard') }}" class="btn btn-secondary ms-2">Abbrechen und zum Dashboard</a>
                 {% endif %}
             </div>
         </form>
