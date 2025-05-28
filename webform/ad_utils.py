@@ -1,5 +1,5 @@
 import os
-from ldap3 import Server, Connection, ALL, LEVEL, SUBTREE, BASE
+from ldap3 import Server, Connection, ALL, LEVEL, SUBTREE, BASE 
 from ldap3.core.exceptions import LDAPException
 import logging
 
@@ -22,7 +22,7 @@ def get_ad_connection():
     prefix = "ldaps://" if use_ssl else "ldap://"
     if not server_uri.lower().startswith(("ldap://", "ldaps://")):
         server_uri = prefix + server_uri
-
+    
     logger.debug(f"Verbinde mit AD-Server: {server_uri}, SSL: {use_ssl} mit Benutzer: {ad_user}")
 
     server = Server(
@@ -30,7 +30,7 @@ def get_ad_connection():
         get_info=ALL,
         use_ssl=use_ssl
     )
-
+    
     try:
         conn = Connection(
             server,
@@ -44,7 +44,7 @@ def get_ad_connection():
         return conn
     except Exception as e:
         logger.error(f"Fehler beim Herstellen der AD-Verbindung oder Bind mit Service-Benutzer {ad_user}: {e}", exc_info=True)
-        raise
+        raise 
 
 def parse_exclude_ous():
     val = os.getenv("AD_OU_EXCLUDE", "")
@@ -100,7 +100,7 @@ def get_users_in_ou(ou_dn):
         conn.search(
             search_base=ou_dn,
             search_filter='(&(objectClass=user)(!(objectClass=computer))(!(userAccountControl:1.2.840.113556.1.4.803:=2)))',
-            search_scope=LEVEL,
+            search_scope=LEVEL, 
             attributes=['sAMAccountName', 'displayName', 'mail', 'distinguishedName']
         )
         for entry in conn.entries:
@@ -161,7 +161,7 @@ def get_user_details_by_samaccountname(conn, user_sam_account_name, attributes=N
     """Ruft Benutzerdetails für einen sAMAccountName ab."""
     if attributes is None:
         attributes = ['displayName', 'mail', 'distinguishedName', 'sAMAccountName']
-
+    
     search_base = os.getenv("AD_SEARCH_BASE")
     if not search_base:
         logger.error("AD_SEARCH_BASE nicht für Benutzersuche (get_user_details_by_samaccountname) gesetzt.")
@@ -195,15 +195,15 @@ def is_user_member_of_group_by_env_var(user_sam_account_name, group_name_env_var
     if not user_sam_account_name:
         logger.error("Kein Benutzername (user_sam_account_name) für Gruppenprüfung übergeben.")
         return False # Oder ValueError
-
+        
     conn = None
     try:
-        conn = get_ad_connection()
+        conn = get_ad_connection() 
         user_dn = get_user_dn_by_samaccountname(conn, user_sam_account_name)
-        if not user_dn: return False
+        if not user_dn: return False 
 
         target_group_dn = _get_group_dn(conn, target_group_cn)
-        if not target_group_dn: return False
+        if not target_group_dn: return False 
 
         is_member = conn.search(search_base=user_dn,
                                 search_filter=f"(memberOf:1.2.840.113556.1.4.1941:={target_group_dn})",
@@ -214,10 +214,10 @@ def is_user_member_of_group_by_env_var(user_sam_account_name, group_name_env_var
     except ValueError as ve: # Fängt ValueErrors von get_ad_connection (fehlende Konfig) oder target_group_cn
         logger.error(f"Konfigurationsfehler (ValueError) bei Gruppenmitgliedschaftsprüfung: {ve}", exc_info=False) # exc_info=False, da der Fehler klar ist
         raise # Erneut auslösen, damit der Decorator es fangen kann
-    except LDAPException as e:
+    except LDAPException as e: 
         logger.error(f"LDAP-Fehler: User '{user_sam_account_name}', Gruppe via ENV '{group_name_env_var_key}' (CN '{target_group_cn}'): {e}", exc_info=True)
         return False # Bei LDAP-Fehlern während der Prüfung eher False zurückgeben als Exception
-    except Exception as e:
+    except Exception as e: 
         logger.error(f"Allg. Fehler: User '{user_sam_account_name}', Gruppe via ENV '{group_name_env_var_key}' (CN '{target_group_cn}'): {e}", exc_info=True)
         return False # Bei unerwarteten Fehlern False
     finally:

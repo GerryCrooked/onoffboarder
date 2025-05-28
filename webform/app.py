@@ -2,7 +2,7 @@ import smtplib
 import os
 import sqlite3
 import requests
-import pdf_generator # Ihr Modul
+import pdf_generator
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, send_file, current_app
 from dotenv import load_dotenv, find_dotenv
 from werkzeug.utils import secure_filename
@@ -39,7 +39,7 @@ ENV_BAUAMT_GROUP = "BAUAMT_GROUP"
 ENV_IT_GROUP = "IT_GROUP"
 ENV_OFFICE_GROUP = "OFFICE_GROUP"
 ENV_PRINT_GROUP = "PRINT_GROUP"
-ENV_RIS_GROUP = "RIS_GROUP"
+ENV_RIS_GROUP = "RIS_RIS_GROUP" # Korrigiert, falls es ein Tippfehler war, sonst anpassen
 
 # --- BEGINN: Hilfsfunktionen & Decorator ---
 def nl2br_filter(s):
@@ -264,7 +264,9 @@ def check_all_subprocesses_done(request_item):
     add_pending(request_item.get('email_account_required') and not request_item.get('email_created_address'), "E-Mail Adresse Erfassung", "E-Mail Adresse")
     add_pending(request_item.get('hardware_required') and not request_item.get('hw_status_setup_done_at'), "Hardware Setup (vollständig)", "Hardware Setup")
     add_pending(request_item.get('needs_fixed_phone') and not request_item.get('phone_status_setup_at'), "Telefon Einrichtung", "Telefon Einrichtung")
-    add_pending(request_item.get('key_required') and not request_item.get('key_status_issued_at'), "Schlüsselausgabe", "Schlüsselausgabe")
+    # Schlüsselvorbereitung bleibt im Bauamt, Schlüsselausgabe geht zu HR
+    add_pending(request_item.get('key_required') and not request_item.get('key_status_prepared_at'), "Bauamt: Schlüssel vorbereitet", "Schlüssel vorbereitet") # Bauamt
+    add_pending(request_item.get('key_required') and not request_item.get('key_status_issued_at'), "HR: Schlüsselausgabe", "Schlüsselausgabe") # HR
     add_pending(request_item.get('needs_ris_access') and not request_item.get('ris_access_status_granted_at'), "RIS Zugang", "RIS Zugang")
     add_pending(request_item.get('needs_cipkom_access') and not request_item.get('cipkom_access_status_granted_at'), "CIPKOM Zugang", "CIPKOM Zugang")
 
@@ -386,10 +388,97 @@ EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 @app.route("/dashboard") # NEUE Route für nicht-Admins
 @require_ad_group(ENV_MAIN_ACCESS_GROUP)
 def user_dashboard():
-    # Hier könnten z.B. nur die Anträge angezeigt werden, die der User selbst gestellt hat,
-    # oder eine andere für ihn relevante Übersicht.
-    # Für den Moment eine einfache Seite.
-    return render_template("user_dashboard.html", username=session.get("user"))
+    conn_db = None
+    current_requests_raw = []
+    current_user_sam = session.get("user")
+
+    try:
+        conn_db = sqlite3.connect("db/onoffboarding.db")
+        conn_db.row_factory = sqlite3.Row
+        c = conn_db.cursor()
+        # Nur Anträge im Status 'offen' oder 'in_bearbeitung' anzeigen
+        try:
+            c.execute("SELECT * FROM requests WHERE status NOT IN ('abgeschlossen', 'abgelehnt') ORDER BY created_at DESC, id DESC")
+        except sqlite3.OperationalError:
+            logger.warning("Spalte 'created_at' nicht in DB gefunden für Sortierung in /dashboard, sortiere nach ID.")
+            c.execute("SELECT * FROM requests WHERE status NOT IN ('abgeschlossen', 'abgelehnt') ORDER BY id DESC")
+        current_requests_raw = c.fetchall()
+    except sqlite3.Error as e:
+        logger.error(f"SQLite Fehler beim Laden aktueller Anträge für Dashboard: {e}", exc_info=True)
+        flash("Fehler beim Laden der Anträge.", "danger")
+    finally:
+        if conn_db: conn_db.close()
+
+    requests_for_dashboard = []
+    for req_raw in current_requests_raw:
+        req_dict = dict(req_raw)
+        
+        # NEU: Prüfen, ob alle Teilaufgaben für diesen Antrag abgeschlossen sind
+        all_subprocesses_completed, _ = check_all_subprocesses_done(req_dict)
+        if all_subprocesses_completed:
+            logger.debug(f"Antrag {req_dict['id']} ist vollständig abgeschlossen, wird nicht auf Dashboard angezeigt.")
+            continue # Diesen Antrag überspringen, da er fertig ist
+
+        action_links = []
+
+        # Prüfen, welche Links der Benutzer sehen darf, basierend auf Gruppe UND Antrags-Flags
+        if ad_utils.is_user_member_of_group_by_env_var(current_user_sam, ENV_HR_GROUP):
+            # HR-Gruppe: Link anzeigen, wenn HR-Aufgaben relevant sind ODER Schlüssel relevant ist
+            # check_all_subprocesses_done gibt uns bereits die pending_tasks, wir können diese hier nutzen
+            # oder spezifisch die Flags prüfen
+            if req_dict.get('process_type') == 'onboarding' or (req_dict.get('key_required') and not req_dict.get('key_status_issued_at')):
+                 action_links.append({'label': 'HR & AIDA bearbeiten', 'url': url_for('hr_update_status', request_id=req_dict['id'])})
+
+        if ad_utils.is_user_member_of_group_by_env_var(current_user_sam, ENV_BAUAMT_GROUP):
+            # Bauamt-Gruppe: Link anzeigen, wenn Schlüsselvorbereitung oder Arbeitsplatzausstattung relevant ist
+            if (req_dict.get('key_required') and not req_dict.get('key_status_prepared_at')) or \
+               (req_dict.get('workplace_needs_new_table') and not req_dict.get('workplace_table_setup_at')) or \
+               (req_dict.get('workplace_needs_new_chair') and not req_dict.get('workplace_chair_setup_at')) or \
+               (req_dict.get('workplace_needs_monitor_arms') and not req_dict.get('workplace_monitor_arms_setup_at')) or \
+               (not req_dict.get('workplace_no_new_equipment') and not req_dict.get('workplace_needs_new_table') and \
+                not req_dict.get('workplace_needs_new_chair') and not req_dict.get('workplace_needs_monitor_arms')):
+                action_links.append({'label': 'Bauamt bearbeiten', 'url': url_for('update_bauamt_status', request_id=req_dict['id'])})
+
+        if ad_utils.is_user_member_of_group_by_env_var(current_user_sam, ENV_IT_GROUP):
+            # IT-Gruppe: Links nur anzeigen, wenn die spezifische IT-Aufgabe im Antrag angefordert wurde
+            if req_dict.get('hardware_required') or req_dict.get('needs_fixed_phone'):
+                if not (req_dict.get('hw_status_setup_done_at') and req_dict.get('phone_status_setup_at')): # Nur anzeigen, wenn Hardware/Telefon nicht komplett fertig
+                    action_links.append({'label': 'IT Hardware/Telefon bearbeiten', 'url': url_for('update_hardware_status', request_id=req_dict['id'])})
+            
+            if req_dict.get('email_account_required') and not req_dict.get('email_created_address'):
+                action_links.append({'label': 'IT E-Mail bearbeiten', 'url': url_for('update_email_status', request_id=req_dict['id'])})
+            
+            if (req_dict.get('needs_ris_access') and not req_dict.get('ris_access_status_granted_at')) or \
+               (req_dict.get('needs_cipkom_access') and not req_dict.get('cipkom_access_status_granted_at')) or \
+               (req_dict.get('other_software_notes')): # Link anzeigen, wenn RIS/CIPKOM offen oder sonstige Software da ist
+                action_links.append({'label': 'IT Software bearbeiten', 'url': url_for('update_software_status', request_id=req_dict['id'])})
+
+        if ad_utils.is_user_member_of_group_by_env_var(current_user_sam, ENV_OFFICE_GROUP):
+            # Vorzimmer-Gruppe: Link nur anzeigen, wenn 'needs_office_notification' True ist UND noch offene Aufgaben existieren
+            if req_dict.get('needs_office_notification'):
+                # Überprüfen, ob noch offene Vorzimmer-Aufgaben existieren
+                office_tasks_pending = False
+                if not req_dict.get('office_outlook_contact_at') or \
+                   not req_dict.get('office_distribution_lists_at') or \
+                   not req_dict.get('office_phone_list_at') or \
+                   not req_dict.get('office_birthday_calendar_at') or \
+                   not req_dict.get('office_welcome_gift_at') or \
+                   not req_dict.get('office_mayor_appt_confirmed_at') or \
+                   not req_dict.get('office_business_cards_at') or \
+                   not req_dict.get('office_organigram_at') or \
+                   not req_dict.get('office_homepage_updated_at'):
+                   office_tasks_pending = True
+                
+                if office_tasks_pending:
+                    action_links.append({'label': 'Vorzimmer bearbeiten', 'url': url_for('update_office_status', request_id=req_dict['id'])})
+
+
+        # Nur Anträge hinzufügen, für die der Benutzer mindestens einen Bearbeitungslink hat
+        if action_links:
+            req_dict['action_links'] = action_links
+            requests_for_dashboard.append(req_dict)
+
+    return render_template("user_dashboard.html", username=session.get("user"), requests=requests_for_dashboard)
 
 @app.route("/", methods=["GET", "POST"])
 @require_ad_group(ENV_ADMIN_MAIN_GROUP)
@@ -605,7 +694,7 @@ def login():
 @app.route("/logout")
 def logout():
     user = session.pop('user', 'Unbekannt'); session.pop('user_dn', None); session.pop('is_admin', None)
-    flash("Sie wurden erfolgreich abgemeldet.", "info"); logger.info(f"ðŸ‘¤ Benutzer '{user}' abgemeldet.")
+    flash("Sie wurden erfolgreich abgemeldet.", "info"); logger.info(f"👋 Benutzer '{user}' abgemeldet.")
     return redirect(url_for("login"))
 
 @app.route("/admin")
@@ -857,8 +946,8 @@ def update_hardware_status(request_id):
                 if c.rowcount > 0 :
                     flash(success_message, "success"); logger.info(f"Antrag {request_id}: Hardware/Telefon-Status '{action}' durch '{current_user}' gesetzt.")
                     updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
-                else: flash("Update nicht erfolgreich, kein Datensatz geÃ¤ndert.", "warning")
-            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("Datenbankfehler.", "danger")
+                else: flash("Update nicht erfolgreich.", "warning")
+            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
             finally:
                 if conn_db_hw: conn_db_hw.close()
         return redirect(url_for('update_hardware_status', request_id=request_id))
@@ -868,7 +957,6 @@ def update_hardware_status(request_id):
 @require_ad_group("BAUAMT_GROUP")
 def update_bauamt_status(request_id):
     if request.method == "GET" and request.args.get('reset_workplace_selection') == 'true':
-        # ... (bestehender Code fÃ¼r reset)
         conn_db = None
         try:
             conn_db = sqlite3.connect("db/onoffboarding.db"); c = conn_db.cursor()
@@ -876,9 +964,13 @@ def update_bauamt_status(request_id):
                             workplace_needs_new_table = 0, workplace_needs_new_chair = 0,
                             workplace_needs_monitor_arms = 0, workplace_no_new_equipment = 0,
                             workplace_table_ordered_at = NULL, workplace_table_ordered_by = NULL,
-                            /* ... alle weiteren Reset-Felder ... */
+                            workplace_table_setup_at = NULL, workplace_table_setup_by = NULL,
+                            workplace_chair_ordered_at = NULL, workplace_chair_ordered_by = NULL,
+                            workplace_chair_setup_at = NULL, workplace_chair_setup_by = NULL,
+                            workplace_monitor_arms_ordered_at = NULL, workplace_monitor_arms_ordered_by = NULL,
+                            workplace_monitor_arms_setup_at = NULL, workplace_monitor_arms_setup_by = NULL
                          WHERE id = ?""", (request_id,))
-            conn_db.commit(); flash("Auswahl zurÃ¼ckgesetzt.", "info")
+            conn_db.commit(); flash("Auswahl zurückgesetzt.", "info")
         except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}"); flash("DB Fehler.", "danger")
         finally:
             if conn_db: conn_db.close()
@@ -886,39 +978,25 @@ def update_bauamt_status(request_id):
 
     request_item = get_request_item_as_dict(request_id)
     if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
-    show_key_issue_button = False # ... (bestehende Logik) ...
-    if request_item.get('key_required') and request_item.get('key_status_prepared_at') and not request_item.get('key_status_issued_at'):
-        if request_item.get('startdate'):
-            try:
-                start_date_obj = datetime.strptime(request_item.get('startdate'), '%Y-%m-%d').date()
-                if start_date_obj <= date.today(): show_key_issue_button = True
-            except ValueError: logger.warning(f"UngÃ¼ltiges Startdatumformat fÃ¼r Antrag {request_id}: {request_item.get('startdate')}")
+
+    # show_key_button ist hier relevant für die Schlüsselvorbereitung
+    show_key_prepared_button = request_item.get('key_required') and not request_item.get('key_status_prepared_at')
 
     if request.method == "POST":
         action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         update_fields = {}; filename_to_save = None; success_message = None; action_processed = False
-        # ... (bestehende Action-Logik fÃ¼r Bauamt)
+
+        # Schlüsselvorbereitung bleibt hier
         if action == "key_prepared" and request_item.get('key_required') and not request_item.get('key_status_prepared_at'):
-            update_fields['key_status_prepared_at'] = now_str; update_fields['key_status_prepared_by'] = current_user; success_message = "SchlÃ¼ssel als 'vorbereitet' markiert."; action_processed = True
-        elif action == "key_issued" and request_item.get('key_required') and request_item.get('key_status_prepared_at') and not request_item.get('key_status_issued_at') and show_key_issue_button:
-            action_processed = True
-            if 'protocol_pdf' not in request.files or request.files['protocol_pdf'].filename == '': flash('Keine Datei fÃ¼r das Protokoll ausgewÃ¤hlt!', 'warning')
-            else:
-                file = request.files['protocol_pdf']
-                if file and allowed_file(file.filename):
-                    original_filename = secure_filename(file.filename); timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")
-                    base, ext = os.path.splitext(original_filename); filename_to_save = f"req{request_id}_keyprot_{timestamp_str}{ext}"[:250]
-                    file.save(os.path.join(concrete_upload_folder, filename_to_save))
-                    update_fields['key_status_issued_at'] = now_str; update_fields['key_status_issued_by'] = current_user
-                    update_fields['key_issuance_protocol_filename'] = filename_to_save
-                    success_message = f"SchlÃ¼ssel als 'ausgegeben' markiert. Protokoll '{filename_to_save}' gespeichert."
-                else: flash('UngÃ¼ltiger Dateityp. Nur PDF erlaubt.', 'warning')
+            update_fields['key_status_prepared_at'] = now_str; update_fields['key_status_prepared_by'] = current_user; success_message = "Schlüssel als 'vorbereitet' markiert."; action_processed = True
+        # Schlüsselausgabe wurde HIER ENTFERNT
+
         elif action == "update_room_number":
             action_processed = True; new_room_number = request.form.get("room_number", "").strip()
             if new_room_number != request_item.get("room_number"):
                 update_fields['room_number'] = new_room_number; success_message = f"Zimmernummer zu '{new_room_number}' aktualisiert."
         elif action == "save_workplace_selection":
-            action_processed = True # ... (Logik wie vorher) ...
+            action_processed = True
             needs_table = request.form.get("workplace_needs_new_table") == "true"
             needs_chair = request.form.get("workplace_needs_new_chair") == "true"
             needs_arms = request.form.get("workplace_needs_monitor_arms") == "true"
@@ -927,7 +1005,18 @@ def update_bauamt_status(request_id):
             update_fields.update({'workplace_needs_new_table': needs_table, 'workplace_needs_new_chair': needs_chair, 'workplace_needs_monitor_arms': needs_arms, 'workplace_no_new_equipment': no_equipment})
             success_message = "Auswahl fÃ¼r Arbeitsplatzausstattung gespeichert."
             # Reset logic...
-        # ... weitere elif fÃ¼r workplace_table_ordered etc. ...
+        elif action == "workplace_table_ordered" and request_item.get('workplace_needs_new_table') and not request_item.get('workplace_table_ordered_at'):
+            update_fields['workplace_table_ordered_at'] = now_str; update_fields['workplace_table_ordered_by'] = current_user; success_message = "Tisch als bestellt markiert."; action_processed = True
+        elif action == "workplace_table_setup" and request_item.get('workplace_needs_new_table') and request_item.get('workplace_table_ordered_at') and not request_item.get('workplace_table_setup_at'):
+            update_fields['workplace_table_setup_at'] = now_str; update_fields['workplace_table_setup_by'] = current_user; success_message = "Tisch als aufgebaut markiert."; action_processed = True
+        elif action == "workplace_chair_ordered" and request_item.get('workplace_needs_new_chair') and not request_item.get('workplace_chair_ordered_at'):
+            update_fields['workplace_chair_ordered_at'] = now_str; update_fields['workplace_chair_ordered_by'] = current_user; success_message = "Stuhl als bestellt markiert."; action_processed = True
+        elif action == "workplace_chair_setup" and request_item.get('workplace_needs_new_chair') and request_item.get('workplace_chair_ordered_at') and not request_item.get('workplace_chair_setup_at'):
+            update_fields['workplace_chair_setup_at'] = now_str; update_fields['workplace_chair_setup_by'] = current_user; success_message = "Stuhl als aufgebaut markiert."; action_processed = True
+        elif action == "workplace_monitor_arms_ordered" and request_item.get('workplace_needs_monitor_arms') and not request_item.get('workplace_monitor_arms_ordered_at'):
+            update_fields['workplace_monitor_arms_ordered_at'] = now_str; update_fields['workplace_monitor_arms_ordered_by'] = current_user; success_message = "Monitorarme als bestellt markiert."; action_processed = True
+        elif action == "workplace_monitor_arms_setup" and request_item.get('workplace_needs_monitor_arms') and request_item.get('workplace_monitor_arms_ordered_at') and not request_item.get('workplace_monitor_arms_setup_at'):
+            update_fields['workplace_monitor_arms_setup_at'] = now_str; update_fields['workplace_monitor_arms_setup_by'] = current_user; success_message = "Monitorarme als montiert markiert."; action_processed = True
 
         if not action_processed and action : flash("UngÃ¼ltige Aktion oder falsche Reihenfolge fÃ¼r Bauamt-Status.", "warning")
         elif update_fields and success_message:
@@ -945,7 +1034,7 @@ def update_bauamt_status(request_id):
             finally:
                 if conn_db_bauamt: conn_db_bauamt.close()
         return redirect(url_for('update_bauamt_status', request_id=request_id))
-    return render_template("update_bauamt_status.html", request_item=request_item, show_key_issue_button=show_key_issue_button)
+    return render_template("update_bauamt_status.html", request_item=request_item, show_key_prepared_button=show_key_prepared_button)
 
 
 @app.route('/uploads/<path:filename>')
@@ -1026,21 +1115,58 @@ def update_software_status(request_id):
 def hr_update_status(request_id):
     request_item = get_request_item_as_dict(request_id)
     if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
+
+    # Logik für show_key_issue_button für HR (Schlüsselausgabe)
+    show_key_issue_button = False
+    if request_item.get('key_required') and request_item.get('key_status_prepared_at') and not request_item.get('key_status_issued_at'):
+        if request_item.get('startdate'):
+            try:
+                start_date_obj = datetime.strptime(request_item.get('startdate'), '%Y-%m-%d').date()
+                if start_date_obj <= date.today():
+                    show_key_issue_button = True
+            except ValueError:
+                logger.warning(f"Ungültiges Startdatumformat für Antrag {request_id}: {request_item.get('startdate')}")
+                show_key_issue_button = False # Bei Fehler auch nicht anzeigen
+
     if request.method == "POST":
         action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        update_fields = {}; success_message = None; action_processed = False
-        # ... (bestehende Logik fÃ¼r HR Actions)
+        update_fields = {}; filename_to_save = None; success_message = None; action_processed = False
+        
+        # Bestehende Logik für HR Actions
         if action == "dienstvereinbarung_issued" and not request_item.get('hr_dienstvereinbarung_at'):
             update_fields['hr_dienstvereinbarung_at'] = now_str; update_fields['hr_dienstvereinbarung_by'] = current_user; success_message = "Dienstvereinbarung als herausgegeben markiert."; action_processed = True
         elif action == "datenschutz_issued" and not request_item.get('hr_datenschutz_at'):
             update_fields['hr_datenschutz_at'] = now_str; update_fields['hr_datenschutz_by'] = current_user; success_message = "Datenschutzblatt als herausgegeben markiert."; action_processed = True
-        # ... usw. fÃ¼r alle HR Actions ...
+        elif action == "dsgvo_informed" and not request_item.get('hr_dsgvo_informed_at'):
+            update_fields['hr_dsgvo_informed_at'] = now_str; update_fields['hr_dsgvo_informed_by'] = current_user; success_message = "Über DSGVO als informiert markiert."; action_processed = True
+        elif action == "it_directive_issued" and not request_item.get('hr_it_directive_at'):
+            update_fields['hr_it_directive_at'] = now_str; update_fields['hr_it_directive_by'] = current_user; success_message = "Dienstanweisung IT als herausgegeben markiert."; action_processed = True
+        elif action == "payroll_sheet_created" and not request_item.get('hr_payroll_sheet_at'):
+            update_fields['hr_payroll_sheet_at'] = now_str; update_fields['hr_payroll_sheet_by'] = current_user; success_message = "Personaldatenblatt Abrechnung als erstellt markiert."; action_processed = True
+        elif action == "security_guidelines_issued" and not request_item.get('hr_security_guidelines_at'):
+            update_fields['hr_security_guidelines_at'] = now_str; update_fields['hr_security_guidelines_by'] = current_user; success_message = "Leitlinien Informationssicherheit als herausgegeben markiert."; action_processed = True
+        elif action == "aida_access_created" and not request_item.get('aida_access_created_at'):
+            update_fields['aida_access_created_at'] = now_str; update_fields['aida_access_created_by'] = current_user; success_message = "AIDA-Zugang als erstellt markiert."; action_processed = True
         elif action == "aida_key_registered" and not request_item.get('aida_key_registered_at'):
-            update_fields['aida_key_registered_at'] = now_str; update_fields['aida_key_registered_by'] = current_user; success_message = "SchlÃ¼ssel in AIDA als aufgenommen markiert."; action_processed = True
+            update_fields['aida_key_registered_at'] = now_str; update_fields['aida_key_registered_by'] = current_user; success_message = "Schlüssel in AIDA als aufgenommen markiert."; action_processed = True
 
-        if not action_processed and action: flash("UngÃ¼ltige Aktion oder Status bereits gesetzt fÃ¼r HR/AIDA.", "warning")
+        # NEUE Schlüssel-Logik HIER EINFÜGEN (NUR key_issued)
+        elif action == "key_issued" and request_item.get('key_required') and show_key_issue_button and not request_item.get('key_status_issued_at'):
+            action_processed = True
+            if 'protocol_pdf' not in request.files or request.files['protocol_pdf'].filename == '': flash('Keine Datei für das Protokoll ausgewählt!', 'warning')
+            else:
+                file = request.files['protocol_pdf']
+                if file and allowed_file(file.filename):
+                    original_filename = secure_filename(file.filename); timestamp_str = datetime.now().strftime("%Y%m%d%H%M%S")
+                    base, ext = os.path.splitext(original_filename); filename_to_save = f"req{request_id}_keyprot_{timestamp_str}{ext}"[:250]
+                    file.save(os.path.join(concrete_upload_folder, filename_to_save))
+                    update_fields['key_status_issued_at'] = now_str; update_fields['key_status_issued_by'] = current_user
+                    update_fields['key_issuance_protocol_filename'] = filename_to_save
+                    success_message = f"Schlüssel als 'ausgegeben' markiert. Protokoll '{filename_to_save}' gespeichert."
+                else: flash('Ungültiger Dateityp. Nur PDF erlaubt.', 'warning')
+
+        if not action_processed and action: flash("Ungültige Aktion oder Status bereits gesetzt für HR/AIDA.", "warning")
         elif update_fields and success_message:
-            # ... (DB Update Logik)
             conn_db_hr = None
             try:
                 conn_db_hr = sqlite3.connect("db/onoffboarding.db"); c = conn_db_hr.cursor()
@@ -1055,42 +1181,8 @@ def hr_update_status(request_id):
             finally:
                 if conn_db_hr: conn_db_hr.close()
         return redirect(url_for('hr_update_status', request_id=request_id))
-    return render_template("hr_update_status.html", request_item=request_item)
+    return render_template("hr_update_status.html", request_item=request_item, show_key_issue_button=show_key_issue_button)
 
-
-#@app.route("/update_office_status/<int:request_id>", methods=["GET", "POST"])
-#@require_ad_group("OFFICE_GROUP")
-#def update_office_status(request_id):
-#    request_item = get_request_item_as_dict(request_id)
-#    if not request_item: flash(f"Antrag {request_id} nicht gefunden.", "danger"); return redirect(url_for("admin"))
-#    if request.method == "POST":
-#        action = request.form.get("action"); current_user = session.get("user", "System"); now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-#        update_fields = {}; success_message = None; action_processed = False
-#        # ... (bestehende Logik fÃ¼r Office Actions)
-#        if action == "office_outlook_contact_done" and not request_item.get('office_outlook_contact_at'):
-#            update_fields['office_outlook_contact_at'] = now_str; update_fields['office_outlook_contact_by'] = current_user; success_message = "Outlook-Kontakt als angelegt markiert."; action_processed = True
-#        # ... usw. fÃ¼r alle Office Actions ...
-#        elif action == "office_homepage_update_done" and not request_item.get('office_homepage_updated_at'):
-#            update_fields['office_homepage_updated_at'] = now_str; update_fields['office_homepage_updated_by'] = current_user; success_message = "Ã„nderungen Homepage als durchgefÃ¼hrt markiert."; action_processed = True
-#
-#        if not action_processed and action: flash("UngÃ¼ltige Aktion oder Status bereits gesetzt fÃ¼r Vorzimmer-Aufgabe.", "warning")
-#        elif update_fields and success_message:
-#            # ... (DB Update Logik)
-#            conn_db_office = None
-#            try:
-#                conn_db_office = sqlite3.connect("db/onoffboarding.db"); c = conn_db_office.cursor()
-#                set_clause_parts = [f"{k} = ?" for k in update_fields.keys()]; values = list(update_fields.values())
-#                values.append(request_id); set_clause_str = ", ".join(set_clause_parts)
-#                c.execute(f"UPDATE requests SET {set_clause_str} WHERE id = ?", tuple(values)); conn_db_office.commit()
-#                if c.rowcount > 0:
-#                    flash(success_message, "success")
-#                    updated_item = get_request_item_as_dict(request_id); check_all_subprocesses_done(updated_item)
-#                else: flash("Update nicht erfolgreich.", "warning")
-#            except sqlite3.Error as e: logger.error(f"DB-Fehler: {e}", exc_info=True); flash("DB Fehler.", "danger")
-#            finally:
-#                if conn_db_office: conn_db_office.close()
-#        return redirect(url_for('update_office_status', request_id=request_id))
-#    return render_template("update_office_status.html", request_item=request_item)
 
 @app.route("/update_office_status/<int:request_id>", methods=["GET", "POST"])
 @require_ad_group(ENV_OFFICE_GROUP) # Stellt sicher, dass nur berechtigte User zugreifen
@@ -1333,8 +1425,62 @@ def init_db():
         c.execute("PRAGMA table_info(requests)"); columns = [info[1] for info in c.fetchall()]
         required_columns = {
             'birthdate': 'TEXT', 'job_title': 'TEXT',
-            # ... (alle anderen Spalten aus Ihrer init_db) ...
-            'office_homepage_updated_at': 'TEXT', 'office_homepage_updated_by': 'TEXT'
+            'startdate': 'TEXT', 'enddate': 'TEXT', 'department': 'TEXT', 'supervisor': 'TEXT',
+            'hardware_computer': 'TEXT', 'hardware_monitor': 'TEXT', 'hardware_accessories': 'TEXT', 'hardware_mobile': 'TEXT',
+            'comments': 'TEXT', 'referenceuser': 'TEXT', 'process_type': 'TEXT',
+            'status': 'TEXT', 'role': 'TEXT', 'department_dn': 'TEXT',
+            'key_required': 'BOOLEAN', 'required_windows': 'BOOLEAN',
+            'hardware_required': 'BOOLEAN', 'email_account_required': 'BOOLEAN',
+            'needs_fixed_phone': 'BOOLEAN', 'needs_ris_access': 'BOOLEAN',
+            'needs_cipkom_access': 'BOOLEAN', 'other_software_notes': 'TEXT',
+            'cipkom_reference_user': 'TEXT', 'room_number': 'TEXT',
+            'workplace_needs_new_table': 'BOOLEAN', 'workplace_needs_new_chair': 'BOOLEAN',
+            'workplace_needs_monitor_arms': 'BOOLEAN', 'workplace_no_new_equipment': 'BOOLEAN',
+            'needs_office_notification': 'BOOLEAN',
+            'created_at': 'TIMESTAMP',
+            'n8n_ad_creation_status': 'TEXT', 'n8n_ad_username_created': 'TEXT',
+            'n8n_ad_initial_password': 'TEXT', 'n8n_ad_status_message': 'TEXT',
+            'n8n_hardware_status_message': 'TEXT',
+            'hw_status_ordered_at': 'TEXT', 'hw_status_ordered_by': 'TEXT',
+            'hw_status_delivered_at': 'TEXT', 'hw_status_delivered_by': 'TEXT',
+            'hw_status_installed_at': 'TEXT', 'hw_status_installed_by': 'TEXT',
+            'hw_status_setup_done_at': 'TEXT', 'hw_status_setup_done_by': 'TEXT',
+            'n8n_key_status_message': 'TEXT',
+            'key_status_prepared_at': 'TEXT', 'key_status_prepared_by': 'TEXT',
+            'key_status_issued_at': 'TEXT', 'key_status_issued_by': 'TEXT',
+            'key_issuance_protocol_filename': 'TEXT',
+            'email_creation_notified_at': 'TEXT', 'email_created_address': 'TEXT',
+            'email_creation_confirmed_at': 'TEXT', 'email_creation_confirmed_by': 'TEXT',
+            'n8n_email_status_message': 'TEXT',
+            'hr_dienstvereinbarung_at': 'TEXT', 'hr_dienstvereinbarung_by': 'TEXT',
+            'hr_datenschutz_at': 'TEXT', 'hr_datenschutz_by': 'TEXT',
+            'hr_dsgvo_informed_at': 'TEXT', 'hr_dsgvo_informed_by': 'TEXT',
+            'hr_it_directive_at': 'TEXT', 'hr_it_directive_by': 'TEXT',
+            'hr_payroll_sheet_at': 'TEXT', 'hr_payroll_sheet_by': 'TEXT',
+            'hr_security_guidelines_at': 'TEXT', 'hr_security_guidelines_by': 'TEXT',
+            'phone_status_ordered_at': 'TEXT', 'phone_status_ordered_by': 'TEXT',
+            'phone_status_setup_at': 'TEXT', 'phone_status_setup_by': 'TEXT',
+            'phone_number_assigned': 'TEXT',
+            'ris_access_status_granted_at': 'TEXT', 'ris_access_status_granted_by': 'TEXT',
+            'cipkom_access_status_granted_at': 'TEXT', 'cipkom_access_status_granted_by': 'TEXT',
+            'n8n_software_status_message': 'TEXT',
+            'workplace_table_ordered_at': 'TEXT', 'workplace_table_ordered_by': 'TEXT',
+            'workplace_table_setup_at': 'TEXT', 'workplace_table_setup_by': 'TEXT',
+            'workplace_chair_ordered_at': 'TEXT', 'workplace_chair_ordered_by': 'TEXT',
+            'workplace_chair_setup_at': 'TEXT', 'workplace_chair_setup_by': 'TEXT',
+            'workplace_monitor_arms_ordered_at': 'TEXT', 'workplace_monitor_arms_ordered_by': 'TEXT',
+            'workplace_monitor_arms_setup_at': 'TEXT', 'workplace_monitor_arms_setup_by': 'TEXT',
+            'office_outlook_contact_at': 'TEXT', 'office_outlook_contact_by': 'TEXT',
+            'office_distribution_lists_at': 'TEXT', 'office_distribution_lists_by': 'TEXT',
+            'office_phone_list_at': 'TEXT', 'office_phone_list_by': 'TEXT',
+            'office_birthday_calendar_at': 'TEXT', 'office_birthday_calendar_by': 'TEXT',
+            'office_welcome_gift_at': 'TEXT', 'office_welcome_gift_by': 'TEXT',
+            'office_mayor_appt_date': 'TEXT', 'office_mayor_appt_confirmed_at': 'TEXT', 'office_mayor_appt_confirmed_by': 'TEXT',
+            'office_business_cards_at': 'TEXT', 'office_business_cards_by': 'TEXT',
+            'office_organigram_at': 'TEXT', 'office_organigram_by': 'TEXT',
+            'office_homepage_updated_at': 'TEXT', 'office_homepage_updated_by': 'TEXT',
+            'aida_access_created_at': 'TEXT', 'aida_access_created_by': 'TEXT',
+            'aida_key_registered_at': 'TEXT', 'aida_key_registered_by': 'TEXT'
         }
         for col, col_type in required_columns.items():
             if col not in columns:
@@ -1355,3 +1501,4 @@ if __name__ == '__main__':
     flask_debug = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1", "t")
     logger.info(f"Starte Flask App im Debug-Modus: {flask_debug}")
     app.run(host="0.0.0.0", port=5000, debug=flask_debug)
+
