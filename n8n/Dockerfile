@@ -38,4 +38,3 @@ RUN pwsh -Command "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted;
 
 # Switch back to the node user
 USER node
-
